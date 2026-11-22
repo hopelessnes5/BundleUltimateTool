@@ -123,11 +123,14 @@ namespace BundleUltimateTool
             base.OnFormClosed(e);
         }
 
+        private BundleTypeHistogram _archiveTypeHistogram;
+
         private void ClearDocuments()
         {
             _openDocuments.Clear();
             _document = null;
             _compositeMode = false;
+            _archiveTypeHistogram = null;
             _readerCache.Clear();
         }
 
@@ -676,24 +679,64 @@ namespace BundleUltimateTool
         private void RefreshTypeFilterOptions()
         {
             if (typeFilterComboBox == null) return;
-            int previous = typeFilterComboBox.SelectedIndex;
+            uint? previousType = (typeFilterComboBox.SelectedItem as TypeFilterOption)?.FileType;
             var options = new List<TypeFilterOption>
             {
                 new TypeFilterOption(null, UiLocalization.TranslateId("filter.allTypes", "All types", _uiLanguage))
             };
-            // Fixed, cheap set of known types — scanning 400k entries here would force
-            // every archive to load just to populate a dropdown.
-            foreach (uint fileType in new uint[] { 1, 2, 5, 7, 18, 19, 513, 0 })
-                options.Add(new TypeFilterOption(fileType, NfsFileTypeInfo.FileTypeLabel(fileType)));
+
+            // Ported from PrototypeUltimateTool texture-index/filter flow: populate type
+            // options from actual scanned/indexed content, not a fixed hardcoded list.
+            IReadOnlyDictionary<uint, int> histogram = GetArchiveTypeHistogram();
+            foreach (KeyValuePair<uint, int> pair in histogram.OrderBy(p => p.Key))
+            {
+                string label = NfsFileTypeInfo.FileTypeLabel(pair.Key);
+                options.Add(new TypeFilterOption(pair.Key, $"{label} ({pair.Value})"));
+            }
 
             typeFilterComboBox.BeginUpdate();
             try
             {
                 typeFilterComboBox.Items.Clear();
                 foreach (TypeFilterOption option in options) typeFilterComboBox.Items.Add(option);
-                typeFilterComboBox.SelectedIndex = previous >= 0 && previous < options.Count ? previous : 0;
+                int selected = 0;
+                for (int i = 0; i < options.Count; i++)
+                {
+                    if (options[i].FileType == previousType) { selected = i; break; }
+                }
+                typeFilterComboBox.SelectedIndex = options.Count > 0 ? selected : -1;
             }
             finally { typeFilterComboBox.EndUpdate(); }
+        }
+
+        private IReadOnlyDictionary<uint, int> GetArchiveTypeHistogram()
+        {
+            if (_compositeMode)
+                return _archiveTypeHistogram?.Counts ?? new Dictionary<uint, int>();
+
+            if (_document != null)
+                return BuildDocumentTypeHistogram(_document);
+
+            return new Dictionary<uint, int>();
+        }
+
+        private static IReadOnlyDictionary<uint, int> BuildDocumentTypeHistogram(BundleDocument document)
+        {
+            var counts = new Dictionary<uint, int>();
+            if (document == null) return counts;
+            try
+            {
+                foreach (BundleEntry entry in document.Entries)
+                {
+                    counts.TryGetValue(entry.FileType, out int existing);
+                    counts[entry.FileType] = existing + 1;
+                }
+            }
+            catch (Exception ex)
+            {
+                ApplicationLog.Write("TYPE_HISTOGRAM_DOC_FAILED", $"'{document.Path}': {ex.Message}", ex);
+            }
+            return counts;
         }
 
         private void UpdateBundleStatus()

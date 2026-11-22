@@ -105,6 +105,8 @@ namespace BundleUltimateTool
                 ApplicationLog.Write("BUNDLE_DISCOVERED", $"root='{_gameFolderModel.RootPath}', count={bundles.Count}");
                 ApplicationLog.Write("INDEX_MODE", "header-only, per-archive lazy table cache");
                 int failures = 0;
+                var histogramSources = new List<(string Path, BundleHeader Header)>(bundles.Count);
+                var histogramIdentities = new List<ArchiveFileIdentity>(bundles.Count);
                 foreach (string bundlePath in bundles)
                 {
                     if (IsDisposed || Disposing) return;
@@ -113,6 +115,10 @@ namespace BundleUltimateTool
                         BundleHeader header = BundleIndex.ReadHeader(bundlePath);
                         string relative = Path.GetRelativePath(_gameFolderModel.RootPath, bundlePath).Replace('\\', '/');
                         _openDocuments.Add(new BundleDocument(bundlePath, header, _readerCache, relative));
+                        string fullPath = Path.GetFullPath(bundlePath);
+                        histogramSources.Add((fullPath, header));
+                        ArchiveFileIdentity identity = ArchiveFileIdentity.TryCapture(fullPath);
+                        if (identity != null) histogramIdentities.Add(identity);
                     }
                     catch (Exception ex)
                     {
@@ -121,10 +127,13 @@ namespace BundleUltimateTool
                     }
                 }
                 if (IsDisposed || Disposing) return;
-                ApplicationLog.Write("STARTUP_STEP", "index done, building tree");
+                ApplicationLog.Write("STARTUP_STEP", "index done, building type histogram");
+                _archiveTypeHistogram = BuildOrLoadTypeHistogram(_gameFolderModel.RootPath, histogramSources, histogramIdentities);
+                ApplicationLog.Write("TYPE_HISTOGRAM_READY",
+                    $"root='{_gameFolderModel.RootPath}', types={_archiveTypeHistogram.Counts.Count}, entries={_archiveTypeHistogram.TotalEntries}");
                 _document = _openDocuments.FirstOrDefault();
                 _compositeMode = true;
-                RefreshGameTypeFilter();
+                RefreshTypeFilterOptions();
                 ApplicationLog.Write("STARTUP_STEP", "after type filter");
                 SetFilesMode(false);
                 ApplicationLog.Write("STARTUP_STEP", "after set files mode");
@@ -161,6 +170,37 @@ namespace BundleUltimateTool
             finally { SetBusy(false); }
         }
 
+        private BundleTypeHistogram BuildOrLoadTypeHistogram(string rootPath,
+            IReadOnlyList<(string Path, BundleHeader Header)> sources,
+            IReadOnlyList<ArchiveFileIdentity> identities)
+        {
+            var token = System.Threading.CancellationToken.None;
+            if (identities.Count == sources.Count && identities.Count > 0)
+            {
+                BundleTypeHistogram cached = BundleTypeHistogramCache.TryLoad(rootPath, identities, token);
+                if (cached != null)
+                {
+                    ApplicationLog.Write("TYPE_HISTOGRAM_CACHE_HIT",
+                        $"root='{rootPath}', files={identities.Count}, types={cached.Counts.Count}");
+                    return cached;
+                }
+            }
+
+            ApplicationLog.Write("TYPE_HISTOGRAM_SCAN_BEGIN", $"root='{rootPath}', files={sources.Count}");
+            BundleTypeHistogram scanned = BundleTypeHistogramScanner.Scan(sources, token, int.MaxValue,
+                (processed, total) =>
+                {
+                    if ((processed % 256) == 0 || (total > 0 && processed == total))
+                        ApplicationLog.Write("TYPE_HISTOGRAM_SCAN_PROGRESS", $"processed={processed}, total={total}");
+                });
+            if (identities.Count == sources.Count && identities.Count > 0)
+            {
+                BundleTypeHistogramCache.Save(rootPath, identities, scanned, token);
+                ApplicationLog.Write("TYPE_HISTOGRAM_CACHE_SAVED", $"root='{rootPath}', files={identities.Count}");
+            }
+            return scanned;
+        }
+
         private void SetFilesMode(bool files)
         {
             _filesMode = files;
@@ -180,6 +220,7 @@ namespace BundleUltimateTool
             else
             {
                 if (noResultsPanel != null) noResultsPanel.Visible = false;
+                RefreshTypeFilterOptions();
                 RebuildTree();
                 UpdateBundleStatus();
             }

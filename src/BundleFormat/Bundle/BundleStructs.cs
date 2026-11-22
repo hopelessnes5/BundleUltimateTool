@@ -25,38 +25,70 @@ public enum NfsFileType : uint
 
 public static class NfsFileTypeInfo
 {
-    /// <summary>Short labels used by the original tool's entry list (GetFileTypeString).</summary>
+    /// <summary>
+    /// Short labels. The first five match the original tool's GetFileTypeString; the rest
+    /// use the names/comments from nfs-bundle-explorer:NFSStructuresDef.h so distinct
+    /// E_NFS_FILE_TYPE values are no longer all shown as "unknown".
+    /// </summary>
     public static string FileTypeLabel(uint fileType) => fileType switch
     {
+        // Original GetFileTypeString names.
         1 => "texture",
         2 => "material",
         5 => "model",
         18 => "defs table",
         513 => "strings",
+        // Identified by sample analysis (see docs/UX_AUDIT.md / analyst reports).
+        3 => "ref table",
+        4 => "hash ref",
+        6 => "descriptor",
+        7 => "config",
+        8 => "D3D9 shader",
+        19 => "type19",
+        48 => "metrics table",
+        80 => "placement",
+        81 => "LOD config",
+        82 => "index LUT",
+        83 => "material props",
+        96 => "spatial index",
+        112 => "challenge XML",
+        128 => "Gnsu20",
+        129 => "sound/SPS",
+        144 => "ref table",
+        145 => "params",
+        176 => "sparse block",
+        177 => "cam spline",
+        178 => "record table",
+        261 => "vehicle stats",
+        262 => "hardpoints",
+        512 => "track graph",
+        514 => "track graph B",
+        515 => "region bounds",
+        516 => "transform nodes",
+        517 => "hash refs",
+        518 => "hash table",
+        519 => "refs",
+        520 => "region bounds+",
+        521 => "hash table",
+        522 => "name table",
+        524 => "ID table",
+        525 => "camera params",
+        526 => "record table",
+        527 => "structured block",
+        528 => "float4 array",
+        529 => "intercept cfg",
+        530 => "name table",
+        531 => "stub",
+        532 => "compact records",
+        769 => "wheel contact",
+        770 => "sys interfaces",
+        771 => "deform index",
+        1793 => "traffic DB",
         _ => "unknown"
     };
 
     // Unknown numeric values stay representable; callers must never reject an entry for them.
-    public static string Describe(uint fileType) => fileType switch
-    {
-        0 => "unknown (0)",
-        1 => "texture (1)",
-        2 => "material (2)",
-        5 => "model (5)",
-        7 => "unknown (7)",
-        18 => "defs table (18)",
-        19 => "unknown (19)",
-        81 => "unknown (81)",
-        129 => "unknown (129)",
-        176 => "unknown (176)",
-        178 => "unknown (178)",
-        262 => "collision (262)",
-        513 => "strings (513)",
-        527 => "unknown (527)",
-        532 => "unknown (532)",
-        771 => "deformation (771)",
-        _ => $"unknown ({fileType})"
-    };
+    public static string Describe(uint fileType) => $"{FileTypeLabel(fileType)} ({fileType})";
 
     // Pure classifiers used by context-menu enablement (covered by BundleChecks).
     public static bool SupportsTextureExport(uint fileType) => fileType == 1;

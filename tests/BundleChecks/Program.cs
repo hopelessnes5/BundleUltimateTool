@@ -125,7 +125,7 @@ WithFixture("VEHICLELIST.BUNDLE", reader =>
     Eq("VEHICLELIST[0]: absoluteHeaderOffset", e.AbsoluteHeaderOffset, 128L);
     Eq("VEHICLELIST[0]: absoluteBodyOffset", e.AbsoluteBodyOffset, 4608L);
     CheckZlib("VEHICLELIST[0]: zlib signature", reader, e);
-    Eq("VEHICLELIST[0]: unknown type stays representable", NfsFileTypeInfo.Describe(e.FileType), "unknown (261)");
+    Eq("VEHICLELIST[0]: type 261 stays representable", NfsFileTypeInfo.Describe(e.FileType), "vehicle stats (261)");
 
     vehicleListCompressedHeader = reader.ReadBytes(e.AbsoluteHeaderOffset, (int)e.Raw.HdrCompSize);
     vehicleListHeader = ZLibAdapter.Decompress(vehicleListCompressedHeader, (int)e.MaskedHdrUncompSize);
@@ -611,9 +611,19 @@ Eq("LABEL material", NfsFileTypeInfo.FileTypeLabel(2), "material");
 Eq("LABEL model", NfsFileTypeInfo.FileTypeLabel(5), "model");
 Eq("LABEL defs table", NfsFileTypeInfo.FileTypeLabel(18), "defs table");
 Eq("LABEL strings", NfsFileTypeInfo.FileTypeLabel(513), "strings");
-Eq("LABEL unknown 261", NfsFileTypeInfo.FileTypeLabel(261), "unknown");
+Eq("LABEL vehicle stats 261", NfsFileTypeInfo.FileTypeLabel(261), "vehicle stats");
 Check("LABEL Describe still keeps numeric suffix", NfsFileTypeInfo.Describe(1) == "texture (1)",
     NfsFileTypeInfo.Describe(1));
+Eq("LABEL config 7", NfsFileTypeInfo.FileTypeLabel(7), "config");
+Eq("LABEL sound/SPS 129", NfsFileTypeInfo.FileTypeLabel(129), "sound/SPS");
+Eq("LABEL hardpoints 262", NfsFileTypeInfo.FileTypeLabel(262), "hardpoints");
+Eq("LABEL deform index 771", NfsFileTypeInfo.FileTypeLabel(771), "deform index");
+Eq("LABEL float4 array 528", NfsFileTypeInfo.FileTypeLabel(528), "float4 array");
+Eq("LABEL D3D9 shader 8", NfsFileTypeInfo.FileTypeLabel(8), "D3D9 shader");
+Eq("LABEL challenge XML 112", NfsFileTypeInfo.FileTypeLabel(112), "challenge XML");
+Eq("LABEL cam spline 177", NfsFileTypeInfo.FileTypeLabel(177), "cam spline");
+Eq("LABEL name table 522", NfsFileTypeInfo.FileTypeLabel(522), "name table");
+Eq("LABEL Describe hardpoints", NfsFileTypeInfo.Describe(262), "hardpoints (262)");
 Check("CONTEXT texture -> DDS only, not OBJ",
     NfsFileTypeInfo.SupportsTextureExport(1) && !NfsFileTypeInfo.SupportsModelExport(1), "texture=1");
 Check("CONTEXT model -> OBJ only, not DDS",
@@ -860,6 +870,182 @@ Check("BUNDLEINDEX bogus table rejected by TryRead", rejected && bogusIndex == n
 bool readHeaderOk = BundleIndex.ReadHeader(bogusBundle).NumFiles == 1;
 Check("BUNDLEINDEX bogus table still indexes by header", readHeaderOk, "header-only indexing");
 File.Delete(bogusBundle);
+
+// ---- type histogram scanner/cache (ported from PrototypeUltimateTool index/cache pattern) ----
+try
+{
+    var fixturePaths = new[]
+    {
+        Path.Combine(FixtureRoot, "VEHICLELIST.BUNDLE"),
+        Path.Combine(FixtureRoot, "VEHICLETEX.BIN"),
+        Path.Combine(FixtureRoot, "VEH_118158_MS.BIN")
+    };
+    var expected = new Dictionary<string, uint[]>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["VEHICLELIST.BUNDLE"] = new uint[] { 261 },
+        ["VEHICLETEX.BIN"] = new uint[] { 1 },
+        ["VEH_118158_MS.BIN"] = new uint[] { 1, 2, 5, 7, 18, 19, 81, 129, 176, 178, 262, 528, 771 }
+    };
+
+    static Dictionary<uint, int> ScanTypeHistogram(string path)
+    {
+        var counts = new Dictionary<uint, int>();
+        using BundleReader reader = BundleReader.Open(path);
+        foreach (BundleEntry entry in reader.Entries)
+        {
+            counts.TryGetValue(entry.FileType, out int existing);
+            counts[entry.FileType] = existing + 1;
+        }
+        return counts;
+    }
+
+    static Dictionary<uint, int> ScanTypeHistogramRaw(string path)
+    {
+        // Mirrors production BundleTypeHistogramScanner: read 80-byte table entries from a
+        // short-lived FileStream, extract fileType at offset 68, no BundleEntry objects.
+        var counts = new Dictionary<uint, int>();
+        BundleHeader header = BundleIndex.ReadHeader(path);
+        int numFiles = checked((int)header.NumFiles);
+        long tableOffset = header.TableOffset;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.SequentialScan);
+        stream.Position = tableOffset;
+        byte[] buf = new byte[80 * 256];
+        int remaining = numFiles;
+        while (remaining > 0)
+        {
+            int chunk = Math.Min(remaining, buf.Length / 80);
+            int bytesToRead = chunk * 80;
+            int readTotal = 0;
+            while (readTotal < bytesToRead)
+            {
+                int r = stream.Read(buf, readTotal, bytesToRead - readTotal);
+                if (r <= 0) throw new EndOfStreamException(path);
+                readTotal += r;
+            }
+            for (int i = 0; i < chunk; i++)
+            {
+                uint fileType = BinaryPrimitives.ReadUInt32LittleEndian(buf.AsSpan(i * 80 + 68, 4));
+                counts.TryGetValue(fileType, out int existing);
+                counts[fileType] = existing + 1;
+            }
+            remaining -= chunk;
+        }
+        return counts;
+    }
+
+    var combinedCounts = new Dictionary<uint, int>();
+    foreach (string path in fixturePaths)
+    {
+        string full = Path.GetFullPath(path);
+        Dictionary<uint, int> rawCounts = ScanTypeHistogramRaw(full);
+        Dictionary<uint, int> entryCounts = ScanTypeHistogram(full);
+        uint[] actualTypes = rawCounts.Keys.OrderBy(k => k).ToArray();
+        uint[] expectedTypes = expected[Path.GetFileName(path)];
+        Check($"TYPE_HISTOGRAM {Path.GetFileName(path)} types",
+            actualTypes.SequenceEqual(expectedTypes),
+            $"actual=[{string.Join(",", actualTypes)}], expected=[{string.Join(",", expectedTypes)}]");
+        int expectedTotal = checked((int)BundleIndex.ReadHeader(full).NumFiles);
+        int actualTotal = rawCounts.Values.Sum();
+        Check($"TYPE_HISTOGRAM {Path.GetFileName(path)} total", actualTotal == expectedTotal,
+            $"total={actualTotal}, numFiles={expectedTotal}");
+        bool matchesEntries = actualTypes.All(t => rawCounts[t] == (entryCounts.TryGetValue(t, out int c) ? c : -1))
+            && entryCounts.Keys.All(t => rawCounts.ContainsKey(t));
+        Check($"TYPE_HISTOGRAM {Path.GetFileName(path)} raw matches entries", matchesEntries, $"types={actualTypes.Length}");
+
+        foreach (var pair in rawCounts)
+        {
+            combinedCounts.TryGetValue(pair.Key, out int existing);
+            combinedCounts[pair.Key] = existing + pair.Value;
+        }
+    }
+
+    // Cache round-trip: write/read a compact sidecar with the same layout as production
+    // (magic/version/root/file identities/histogram), verify preservation and invalidation.
+    string tempRoot = Path.Combine(Path.GetTempPath(), "BundleUltimateTool-Histogram-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempRoot);
+    string cachePath = Path.Combine(tempRoot, "histogram.thc");
+    try
+    {
+        var identities = fixturePaths.Select(p =>
+        {
+            var fi = new FileInfo(p);
+            return (Path: Path.GetFullPath(p), Length: fi.Length, Ticks: fi.LastWriteTimeUtc.Ticks);
+        }).ToList();
+
+        using (var output = new FileStream(cachePath, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var writer = new BinaryWriter(output, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(0x48444242); // BBDH
+            writer.Write(1);
+            writer.Write(Path.GetFullPath(tempRoot));
+            writer.Write(identities.Count);
+            foreach (var id in identities)
+            {
+                writer.Write(id.Path);
+                writer.Write(id.Length);
+                writer.Write(id.Ticks);
+            }
+            var ordered = combinedCounts.OrderBy(p => p.Key).ToList();
+            writer.Write(ordered.Count);
+            foreach (var pair in ordered) { writer.Write(pair.Key); writer.Write(pair.Value); }
+        }
+        Check("TYPE_HISTOGRAM cache file written", File.Exists(cachePath), cachePath);
+
+        Dictionary<uint, int> loadedCounts = new();
+        bool identityOk = false;
+        using (var input = new FileStream(cachePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var reader = new BinaryReader(input, Encoding.UTF8, leaveOpen: true))
+        {
+            bool magicOk = reader.ReadInt32() == 0x48444242 && reader.ReadInt32() == 1;
+            string root = reader.ReadString();
+            int fileCount = reader.ReadInt32();
+            identityOk = magicOk && string.Equals(root, Path.GetFullPath(tempRoot), StringComparison.OrdinalIgnoreCase)
+                && fileCount == identities.Count;
+            for (int i = 0; i < fileCount && identityOk; i++)
+            {
+                string p = reader.ReadString(); long l = reader.ReadInt64(); long t = reader.ReadInt64();
+                if (!string.Equals(p, identities[i].Path, StringComparison.OrdinalIgnoreCase) || l != identities[i].Length || t != identities[i].Ticks)
+                    identityOk = false;
+            }
+            int histCount = reader.ReadInt32();
+            for (int i = 0; i < histCount; i++) { uint k = reader.ReadUInt32(); int v = reader.ReadInt32(); loadedCounts[k] = v; }
+        }
+        Check("TYPE_HISTOGRAM cache identity verified", identityOk, $"files={identities.Count}");
+        uint[] loadedTypes = loadedCounts.Keys.OrderBy(k => k).ToArray();
+        uint[] scannedTypes = combinedCounts.Keys.OrderBy(k => k).ToArray();
+        Check("TYPE_HISTOGRAM cache round-trip keys", loadedTypes.SequenceEqual(scannedTypes),
+            $"loaded=[{string.Join(",", loadedTypes)}], scanned=[{string.Join(",", scannedTypes)}]");
+        bool countsMatch = scannedTypes.All(t => loadedCounts.TryGetValue(t, out int c) && combinedCounts.TryGetValue(t, out int e) && c == e);
+        Check("TYPE_HISTOGRAM cache round-trip counts", countsMatch, $"types={scannedTypes.Length}");
+
+        // Invalidation: changed identity must be rejected.
+        var altered = identities.ToList();
+        altered[0] = (altered[0].Path, altered[0].Length, altered[0].Ticks + 1);
+        bool alteredRejected = false;
+        using (var input = new FileStream(cachePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var reader = new BinaryReader(input, Encoding.UTF8, leaveOpen: true))
+        {
+            reader.ReadInt32(); reader.ReadInt32(); reader.ReadString();
+            int fileCount = reader.ReadInt32();
+            alteredRejected = fileCount != altered.Count;
+            for (int i = 0; i < fileCount && !alteredRejected; i++)
+            {
+                string p = reader.ReadString(); long l = reader.ReadInt64(); long t = reader.ReadInt64();
+                if (!string.Equals(p, altered[i].Path, StringComparison.OrdinalIgnoreCase) || l != altered[i].Length || t != altered[i].Ticks)
+                    alteredRejected = true;
+            }
+        }
+        Check("TYPE_HISTOGRAM cache invalidates on identity change", alteredRejected, alteredRejected ? "rejected" : "unexpected match");
+    }
+    finally
+    {
+        try { Directory.Delete(tempRoot, true); } catch { }
+    }
+}
+catch (Exception ex)
+{
+    Check("TYPE_HISTOGRAM checks", false, $"{ex.GetType().Name}: {ex.Message}");
+}
 
 Console.WriteLine($"INFO  | TOTAL PASS COUNT | {passes}");
 Console.WriteLine(failures == 0

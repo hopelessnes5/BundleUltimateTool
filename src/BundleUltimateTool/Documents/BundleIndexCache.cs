@@ -272,3 +272,297 @@ internal sealed class ArchiveFileIdentity
             && current.LastWriteTimeUtcTicks == LastWriteTimeUtcTicks;
     }
 }
+
+/// <summary>
+/// Compact file-type histogram for a set of discovered bundles. Used to populate the
+/// archive type filter without loading full per-entry indices for every bundle.
+/// </summary>
+internal sealed class BundleTypeHistogram
+{
+    internal IReadOnlyDictionary<uint, int> Counts { get; }
+    internal int TotalEntries { get; }
+
+    internal BundleTypeHistogram(IReadOnlyDictionary<uint, int> counts)
+    {
+        Counts = counts ?? throw new ArgumentNullException(nameof(counts));
+        long total = 0;
+        foreach (int value in counts.Values) total += value;
+        TotalEntries = total > int.MaxValue ? int.MaxValue : (int)total;
+    }
+}
+
+/// <summary>
+/// Sidecar cache for game-folder type histograms.
+/// Pattern ported from PrototypeUltimateTool Caching/TextureIndexCacheStore.cs,
+/// TextureIndexCacheCodec.cs and ArchiveFileIdentity.cs: magic/version, strict identity,
+/// byte budgets, cancellation, atomic write, safe fallback on invalid cache.
+/// </summary>
+internal static class BundleTypeHistogramCache
+{
+    private const int Magic = 0x48444242; // "BBDH"
+    private const int Version = 1;
+    private const int MaxFiles = 32_000;
+    private const int MaxHistogramEntries = 4096;
+    private const long MaxCacheBytes = 16L * 1024 * 1024;
+    private const int MaxStringBytes = 2048;
+
+    internal readonly record struct HistogramSource(string RootPath, IReadOnlyList<ArchiveFileIdentity> Files);
+
+    private static string CacheDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "BundleUltimateTool", "TypeHistogramCache");
+
+    private static string CachePath(string rootPath)
+    {
+        string full = Path.GetFullPath(rootPath);
+        string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(full.ToLowerInvariant())));
+        return Path.Combine(CacheDirectory, key + ".thc");
+    }
+
+    internal static BundleTypeHistogram? TryLoad(string rootPath, IReadOnlyList<ArchiveFileIdentity> files,
+        CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(rootPath) || files == null) return null;
+        string cachePath = CachePath(rootPath);
+        if (!File.Exists(cachePath)) return null;
+        try
+        {
+            using var input = new FileStream(cachePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (input.Length < 0 || input.Length > MaxCacheBytes) return null;
+            var result = TryRead(input, Path.GetFullPath(rootPath), files, token);
+            return AllStillMatch(files) ? result : null;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch
+        {
+            return null;
+        }
+    }
+
+    internal static bool Save(string rootPath, IReadOnlyList<ArchiveFileIdentity> files,
+        BundleTypeHistogram histogram, CancellationToken token = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
+        ArgumentNullException.ThrowIfNull(files);
+        ArgumentNullException.ThrowIfNull(histogram);
+        token.ThrowIfCancellationRequested();
+        if (files.Count > MaxFiles) return false;
+        if (histogram.Counts.Count > MaxHistogramEntries) return false;
+        if (!AllStillMatch(files)) return false;
+
+        string cachePath = CachePath(rootPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
+        try
+        {
+            AtomicFileWriter.Write(cachePath, output =>
+            {
+                Write(output, Path.GetFullPath(rootPath), files, histogram, token);
+                token.ThrowIfCancellationRequested();
+                if (!AllStillMatch(files))
+                    throw new IOException("Source bundle set changed while writing type histogram cache.");
+            });
+            return true;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static BundleTypeHistogram? TryRead(Stream input, string rootPath,
+        IReadOnlyList<ArchiveFileIdentity> expectedFiles, CancellationToken token)
+    {
+        if (!input.CanRead || !input.CanSeek) return null;
+        try
+        {
+            using var reader = new BinaryReader(input, Encoding.UTF8, leaveOpen: true);
+            if (reader.ReadInt32() != Magic || reader.ReadInt32() != Version) return null;
+            string cachedRoot = ReadBudgetedString(reader, MaxStringBytes);
+            if (!string.Equals(cachedRoot, rootPath, StringComparison.OrdinalIgnoreCase)) return null;
+
+            int fileCount = reader.ReadInt32();
+            if (fileCount < 0 || fileCount > MaxFiles) return null;
+            if (fileCount != expectedFiles.Count) return null;
+            for (int i = 0; i < fileCount; i++)
+            {
+                if ((i & 255) == 0) token.ThrowIfCancellationRequested();
+                string path = ReadBudgetedString(reader, MaxStringBytes);
+                long length = reader.ReadInt64();
+                long ticks = reader.ReadInt64();
+                ArchiveFileIdentity expected = expectedFiles[i];
+                if (!string.Equals(path, expected.FullPath, StringComparison.OrdinalIgnoreCase) ||
+                    length != expected.Length || ticks != expected.LastWriteTimeUtcTicks)
+                    return null;
+            }
+
+            int histogramCount = reader.ReadInt32();
+            if (histogramCount < 0 || histogramCount > MaxHistogramEntries) return null;
+            var counts = new Dictionary<uint, int>(histogramCount);
+            for (int i = 0; i < histogramCount; i++)
+            {
+                if ((i & 255) == 0) token.ThrowIfCancellationRequested();
+                uint fileType = reader.ReadUInt32();
+                int count = reader.ReadInt32();
+                if (count < 0) return null;
+                counts[fileType] = count;
+            }
+
+            if (input.Position != input.Length) return null;
+            token.ThrowIfCancellationRequested();
+            return new BundleTypeHistogram(counts);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (EndOfStreamException) { return null; }
+        catch (IOException) { return null; }
+        catch (InvalidDataException) { return null; }
+        catch (FormatException) { return null; }
+        catch (ArgumentOutOfRangeException) { return null; }
+    }
+
+    private static void Write(Stream output, string rootPath, IReadOnlyList<ArchiveFileIdentity> files,
+        BundleTypeHistogram histogram, CancellationToken token)
+    {
+        using var writer = new BinaryWriter(output, Encoding.UTF8, leaveOpen: true);
+        writer.Write(Magic);
+        writer.Write(Version);
+        WriteBudgetedString(writer, rootPath, MaxStringBytes);
+        writer.Write(files.Count);
+        for (int i = 0; i < files.Count; i++)
+        {
+            if ((i & 255) == 0) token.ThrowIfCancellationRequested();
+            ArchiveFileIdentity file = files[i];
+            WriteBudgetedString(writer, file.FullPath, MaxStringBytes);
+            writer.Write(file.Length);
+            writer.Write(file.LastWriteTimeUtcTicks);
+        }
+
+        var ordered = new List<KeyValuePair<uint, int>>(histogram.Counts);
+        ordered.Sort((a, b) => a.Key.CompareTo(b.Key));
+        writer.Write(ordered.Count);
+        foreach (KeyValuePair<uint, int> pair in ordered)
+        {
+            token.ThrowIfCancellationRequested();
+            writer.Write(pair.Key);
+            writer.Write(pair.Value);
+        }
+    }
+
+    private static bool AllStillMatch(IReadOnlyList<ArchiveFileIdentity> files)
+    {
+        for (int i = 0; i < files.Count; i++)
+            if (!files[i].StillMatches()) return false;
+        return true;
+    }
+
+    private static string ReadBudgetedString(BinaryReader reader, int maximumBytes)
+    {
+        int count = reader.Read7BitEncodedInt();
+        if (count < 0 || count > maximumBytes || count > reader.BaseStream.Length - reader.BaseStream.Position)
+            throw new InvalidDataException("Bundle type histogram cache string exceeds budget.");
+        byte[] bytes = reader.ReadBytes(count);
+        if (bytes.Length != count) throw new EndOfStreamException();
+        return Encoding.UTF8.GetString(bytes);
+    }
+
+    private static void WriteBudgetedString(BinaryWriter writer, string value, int maximumBytes)
+    {
+        int byteCount = Encoding.UTF8.GetByteCount(value);
+        if (byteCount > maximumBytes) throw new InvalidDataException("Bundle type histogram cache string exceeds budget.");
+        writer.Write(value);
+    }
+}
+
+/// <summary>
+/// Scans bundle table entries to build a compact type histogram without materializing
+/// BundleEntry objects. Pattern ported from PrototypeUltimateTool's texture-index scan
+/// flow: bounded/cancellable scan, compact result, no full object graph retained.
+/// </summary>
+internal static class BundleTypeHistogramScanner
+{
+    private const int TableEntrySize = 80;
+    private const int FileTypeOffset = 68; // 17th uint32 in the 20-field table entry
+
+    internal static BundleTypeHistogram Scan(IEnumerable<(string Path, BundleHeader Header)> bundles,
+        CancellationToken token = default, int maxBundles = int.MaxValue, Action<int, int>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(bundles);
+        var counts = new Dictionary<uint, int>();
+        int processed = 0;
+        int total = 0;
+        if (bundles is ICollection<(string Path, BundleHeader Header)> collection) total = collection.Count;
+
+        foreach ((string path, BundleHeader header) in bundles)
+        {
+            token.ThrowIfCancellationRequested();
+            if (processed >= maxBundles) break;
+            try
+            {
+                ScanBundle(path, header, counts, token);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                ApplicationLog.Write("TYPE_HISTOGRAM_SCAN_FAILED", $"'{path}': {ex.Message}", ex);
+            }
+            processed++;
+            if ((processed % 64) == 0) progress?.Invoke(processed, total);
+        }
+        progress?.Invoke(processed, total);
+        return new BundleTypeHistogram(counts);
+    }
+
+    internal static BundleTypeHistogram ScanFiles(IEnumerable<string> bundlePaths,
+        CancellationToken token = default, int maxBundles = int.MaxValue, Action<int, int>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(bundlePaths);
+        var withHeaders = new List<(string Path, BundleHeader Header)>();
+        foreach (string path in bundlePaths)
+        {
+            token.ThrowIfCancellationRequested();
+            try { withHeaders.Add((Path.GetFullPath(path), BundleIndex.ReadHeader(path))); }
+            catch (Exception ex) { ApplicationLog.Write("TYPE_HISTOGRAM_HEADER_FAILED", $"'{path}': {ex.Message}", ex); }
+        }
+        return Scan(withHeaders, token, maxBundles, progress);
+    }
+
+    private static void ScanBundle(string path, BundleHeader header, Dictionary<uint, int> counts, CancellationToken token)
+    {
+        int numFiles = checked((int)header.NumFiles);
+        if (numFiles <= 0) return;
+        long tableOffset = header.TableOffset;
+        long needed = (long)numFiles * TableEntrySize;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.SequentialScan);
+        if (tableOffset < 0 || tableOffset + needed > stream.Length)
+            throw new InvalidDataException($"Table range out of bounds: offset={tableOffset}, entries={numFiles}, length={stream.Length}.");
+        stream.Position = tableOffset;
+
+        byte[] buffer = new byte[64 * 1024];
+        int bufferPos = 0;
+        int bufferLen = 0;
+        for (int i = 0; i < numFiles; i++)
+        {
+            if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
+            if (bufferPos + TableEntrySize > bufferLen)
+            {
+                int remaining = bufferLen - bufferPos;
+                if (remaining > 0) Buffer.BlockCopy(buffer, bufferPos, buffer, 0, remaining);
+                bufferPos = 0;
+                bufferLen = remaining;
+                while (bufferLen < TableEntrySize)
+                {
+                    int read = stream.Read(buffer, bufferLen, buffer.Length - bufferLen);
+                    if (read <= 0) throw new EndOfStreamException("Unexpected end of bundle table.");
+                    bufferLen += read;
+                }
+            }
+            uint fileType = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(
+                buffer.AsSpan(bufferPos + FileTypeOffset, 4));
+            counts.TryGetValue(fileType, out int existing);
+            counts[fileType] = existing + 1;
+            bufferPos += TableEntrySize;
+        }
+    }
+}
