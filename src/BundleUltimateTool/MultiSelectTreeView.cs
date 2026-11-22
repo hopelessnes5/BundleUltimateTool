@@ -80,7 +80,7 @@ namespace BundleUltimateTool
             // DoubleBuffered is exposed to derived controls; avoid reflecting into the
             // private WinForms implementation from MainForm.
             DoubleBuffered = true;
-            DrawMode = TreeViewDrawMode.OwnerDrawText;
+            DrawMode = TreeViewDrawMode.OwnerDrawAll;
             DrawNode += DrawMultiSelectedNode;
         }
 
@@ -176,6 +176,7 @@ namespace BundleUltimateTool
             {
                 Point point = PointToClient(Cursor.Position);
                 TreeNode hitNode = GetNodeAt(point);
+                bool wasExpanded = hitNode != null && hitNode.IsExpanded;
                 bool ctrl = (ModifierKeys & Keys.Control) == Keys.Control;
                 bool shift = (ModifierKeys & Keys.Shift) == Keys.Shift;
                 bool previousGesture = IsSelectionGestureInProgress;
@@ -183,6 +184,15 @@ namespace BundleUltimateTool
                 try
                 {
                     base.WndProc(ref m);
+                    // OwnerDrawAll moves our painted toggle glyph into the indentation
+                    // zone; make a single click there expand/collapse reliably and make
+                    // sure a collapsed node can be expanded again.
+                    if (hitNode != null && hitNode.Nodes.Count > 0 &&
+                        point.X < hitNode.Bounds.Left && hitNode.IsExpanded == wasExpanded)
+                    {
+                        hitNode.Toggle();
+                        return;
+                    }
                     if (!_insideSelectionUpdate && hitNode != null)
                         ApplyMouseSelection(hitNode, ctrl, shift);
                 }
@@ -401,16 +411,35 @@ namespace BundleUltimateTool
                 foreground = AdditionalSelectionForeColor;
             }
 
-            // OwnerDrawText lets Windows continue to render indentation and expand/collapse
-            // glyphs. Extend only from the text start to the right edge so those glyphs are
-            // not painted over while the whole row's text area remains visibly selected.
-            Rectangle rowBounds = new Rectangle(e.Bounds.Left, e.Bounds.Top,
-                Math.Max(e.Bounds.Width, ClientSize.Width - e.Bounds.Left), e.Bounds.Height);
+            // OwnerDrawAll: draw the full row ourselves — selection fill, expand glyph,
+            // icon and text — while keeping the compact row height.
+            Rectangle rowBounds = new Rectangle(0, e.Bounds.Top,
+                ClientSize.Width, e.Bounds.Height);
             using (var brush = new SolidBrush(background))
                 e.Graphics.FillRectangle(brush, rowBounds);
 
-            Rectangle textBounds = new Rectangle(e.Bounds.Left, e.Bounds.Top,
-                Math.Max(0, ClientSize.Width - e.Bounds.Left - 2), e.Bounds.Height);
+            // Draw the toggle in the same indentation zone the native TreeView uses for
+            // hit-testing, not at the text start where a click would only select the row.
+            int x = Math.Max(2, e.Bounds.Left - Indent + 2);
+            int iconY = e.Bounds.Top + Math.Max(0, (e.Bounds.Height - 16) / 2);
+            if (e.Node.Nodes.Count > 0)
+            {
+                int boxY = e.Bounds.Top + (e.Bounds.Height - 9) / 2;
+                using var glyphPen = new Pen(foreground);
+                e.Graphics.DrawRectangle(glyphPen, x, boxY, 8, 8);
+                int midY = boxY + 4;
+                e.Graphics.DrawLine(glyphPen, x + 2, midY, x + 6, midY);
+                if (!e.Node.IsExpanded) e.Graphics.DrawLine(glyphPen, x + 4, boxY + 2, x + 4, boxY + 6);
+                x += 12;
+            }
+            if (ImageList != null && e.Node.ImageIndex >= 0 && e.Node.ImageIndex < ImageList.Images.Count)
+            {
+                ImageList.Draw(e.Graphics, x, iconY, 16, 16, e.Node.ImageIndex);
+                x += 18;
+            }
+
+            Rectangle textBounds = new Rectangle(x, e.Bounds.Top,
+                Math.Max(0, ClientSize.Width - x - 4), e.Bounds.Height);
             Font nodeFont = e.Node.NodeFont ?? Font;
             TextRenderer.DrawText(e.Graphics, e.Node.Text ?? string.Empty, nodeFont, textBounds,
                 foreground, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);

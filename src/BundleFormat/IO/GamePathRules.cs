@@ -22,6 +22,18 @@ public static class GamePathRules
         return extension.Length > 0 && BundleExtensions.Contains(extension);
     }
 
+    private static readonly HashSet<string> RelevantExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".bundle", ".bndl", ".bin", ".nfs", ".dds", ".obj", ".mtl", ".txt", ".xml", ".ini"
+    };
+
+    public static bool IsRelevantExtension(string extension)
+    {
+        if (string.IsNullOrWhiteSpace(extension)) return false;
+        string normalized = extension.StartsWith('.') ? extension : "." + extension;
+        return RelevantExtensions.Contains(normalized);
+    }
+
     public static bool IsTextFile(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return false;

@@ -6,20 +6,21 @@ using BundleFormat.Bundle;
 using BundleFormat.Compression;
 using BundleFormat.Primitives;
 using BundleFormat.Tables;
+using BundleUltimateTool.Documents;
 
 namespace BundleUltimateTool
 {
     public partial class MainForm
     {
-        private BundleFileInfo TryGetFileInfo(BundleEntry entry, out string error)
+        private BundleFileInfo TryGetFileInfo(BundleDocument document, BundleEntry entry, out string error)
         {
             error = null;
             try
             {
-                byte[] packedHeader = _document.Reader.ReadBytes(
+                byte[] packedHeader = document.Reader.ReadBytes(
                     entry.AbsoluteHeaderOffset, (int)entry.Raw.HdrCompSize);
                 byte[] packedBody = entry.Raw.DataCompSize > 0
-                    ? _document.Reader.ReadBytes(entry.AbsoluteBodyOffset, (int)entry.Raw.DataCompSize)
+                    ? document.Reader.ReadBytes(entry.AbsoluteBodyOffset, (int)entry.Raw.DataCompSize)
                     : Array.Empty<byte>();
                 return new BundleFileInfo(entry, packedHeader, packedBody);
             }
@@ -31,27 +32,23 @@ namespace BundleUltimateTool
             }
         }
 
-        private byte[] GetDecompressedHeader(BundleEntry entry)
+        private byte[] GetDecompressedHeader(BundleDocument document, BundleEntry entry)
         {
-            byte[] packed = _document.Reader.ReadBytes(
+            byte[] packed = document.Reader.ReadBytes(
                 entry.AbsoluteHeaderOffset, (int)entry.Raw.HdrCompSize);
             return ZLibAdapter.Decompress(packed, (int)entry.MaskedHdrUncompSize);
         }
 
-        private BundleEntry GetSelectedEntry()
-        {
-            if (_document == null || nodeTreeView.SelectedNode?.Tag is not int index ||
-                index < 0 || index >= _document.Entries.Count) return null;
-            return _document.Entries[index];
-        }
+        private BundleEntryView GetSelectedView() => nodeTreeView.SelectedNode?.Tag as BundleEntryView;
 
         private void SaveStrings()
         {
-            BundleEntry entry = GetSelectedEntry();
-            if (entry == null || entry.FileType != (uint)NfsFileType.StringsTable) return;
+            BundleEntryView view = GetSelectedView();
+            if (view == null || view.Entry.FileType != (uint)NfsFileType.StringsTable) return;
+            BundleEntry entry = view.Entry;
             try
             {
-                NfsStringsTable table = NfsStringsTable.Parse(GetDecompressedHeader(entry));
+                NfsStringsTable table = NfsStringsTable.Parse(GetDecompressedHeader(view.Document, entry));
                 using var dialog = new SaveFileDialog
                 {
                     Title = UiLocalization.TranslateId("dialog.strings.save", "Save strings table", _uiLanguage),
@@ -82,11 +79,12 @@ namespace BundleUltimateTool
 
         private void ViewDefs()
         {
-            BundleEntry entry = GetSelectedEntry();
-            if (entry == null || entry.FileType != (uint)NfsFileType.DefsTable) return;
+            BundleEntryView view = GetSelectedView();
+            if (view == null || view.Entry.FileType != (uint)NfsFileType.DefsTable) return;
+            BundleEntry entry = view.Entry;
             try
             {
-                NfsDefsTable table = NfsDefsTable.Parse(GetDecompressedHeader(entry));
+                NfsDefsTable table = NfsDefsTable.Parse(GetDecompressedHeader(view.Document, entry));
                 defsGrid.Rows.Clear();
                 foreach (NfsDefsTable.DefEntry def in table.Entries)
                     defsGrid.Rows.Add(def.DefIdHex, def.Offset.ToString(), def.Type.ToString());

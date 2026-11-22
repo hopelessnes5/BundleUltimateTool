@@ -39,6 +39,8 @@ namespace BundleUltimateTool
             {
                 _emptyDocument.Visible = false;
                 if (!_gameFolderModel.HasRoot && noResultsPanel != null) noResultsPanel.Visible = false;
+                if (channelToolStrip != null) channelToolStrip.Visible = false;
+                if (previewScrollPanel != null) previewScrollPanel.Visible = false;
                 previewBox.Visible = false;
                 filePreviewTextBox.Visible = hasProperties && propGrid.SelectedObject is GameFileProperties;
                 propGrid.Visible = hasProperties;
@@ -51,7 +53,9 @@ namespace BundleUltimateTool
             bool hasDocument = _document != null;
             if (!hasDocument && noResultsPanel != null) noResultsPanel.Visible = false;
             _emptyDocument.Visible = !hasDocument;
-            previewBox.Visible = hasDocument;
+            bool show3D = model3DView != null && model3DView.Visible;
+            if (previewScrollPanel != null) previewScrollPanel.Visible = hasDocument && !show3D;
+            previewBox.Visible = hasDocument && !show3D;
             if (!hasDocument) _emptyDocument.BringToFront();
             filePreviewTextBox.Visible = false;
 

@@ -6,21 +6,22 @@ using System.Windows.Forms;
 using BundleFormat.Bundle;
 using BundleFormat.Compression;
 using BundleFormat.Models;
+using BundleUltimateTool.Documents;
 
 namespace BundleUltimateTool
 {
     public partial class MainForm
     {
-        private NfsModel TryLoadModel(BundleEntry entry, out string error)
+        private NfsModel TryLoadModel(BundleDocument document, BundleEntry entry, out string error)
         {
             error = null;
             try
             {
                 byte[] headerBytes = ZLibAdapter.Decompress(
-                    _document.Reader.ReadBytes(entry.AbsoluteHeaderOffset, (int)entry.Raw.HdrCompSize),
+                    document.Reader.ReadBytes(entry.AbsoluteHeaderOffset, (int)entry.Raw.HdrCompSize),
                     (int)entry.MaskedHdrUncompSize);
                 byte[] bodyBytes = ZLibAdapter.Decompress(
-                    _document.Reader.ReadBytes(entry.AbsoluteBodyOffset, (int)entry.Raw.DataCompSize),
+                    document.Reader.ReadBytes(entry.AbsoluteBodyOffset, (int)entry.Raw.DataCompSize),
                     (int)entry.MaskedDataUncompSize);
                 return NfsModel.InitFromData(headerBytes, bodyBytes);
             }
@@ -34,14 +35,12 @@ namespace BundleUltimateTool
 
         private void ExportObj(bool selectedOnly)
         {
-            if (_document == null) return;
-            var models = new List<BundleEntry>(_document.Entries
-                .Where(entry => entry.FileType == (uint)NfsFileType.Model));
+            if (_openDocuments.Count == 0) return;
+            var models = GetAllViews().Where(view => view.Entry.FileType == (uint)NfsFileType.Model).ToList();
             if (selectedOnly)
             {
-                var selectedIndices = nodeTreeView.SelectedNodes.OfType<TreeNode>()
-                    .Select(node => node.Tag).OfType<int>().ToHashSet();
-                models.RemoveAll(entry => !selectedIndices.Contains(entry.Index));
+                var selected = GetSelectedViews().Select(view => (view.Document, view.Entry.Index)).ToHashSet();
+                models.RemoveAll(view => !selected.Contains((view.Document, view.Entry.Index)));
             }
             if (models.Count == 0)
             {
@@ -61,7 +60,7 @@ namespace BundleUltimateTool
                     Title = UiLocalization.TranslateId("dialog.export.objFile", "Save OBJ model", _uiLanguage),
                     Filter = UiLocalization.TranslateId("dialog.export.objFilter",
                         "Wavefront OBJ (*.obj)|*.obj", _uiLanguage),
-                    FileName = $"file_{models[0].Index:D4}.obj",
+                    FileName = ExportFileName(models[0], "obj"),
                     OverwritePrompt = true
                 };
                 if (saveDialog.ShowDialog(this) != DialogResult.OK) return;
@@ -80,12 +79,13 @@ namespace BundleUltimateTool
 
             int exported = 0;
             int failed = 0;
-            foreach (BundleEntry entry in models)
+            foreach (BundleEntryView view in models)
             {
-                string target = singlePath ?? Path.Combine(folderPath, $"file_{entry.Index:D4}.obj");
+                BundleEntry entry = view.Entry;
+                string target = singlePath ?? Path.Combine(folderPath, ExportFileName(view, "obj"));
                 try
                 {
-                    NfsModel model = TryLoadModel(entry, out string error);
+                    NfsModel model = TryLoadModel(view.Document, entry, out string error);
                     if (model == null)
                         throw new BundleFormat.Primitives.BundleFormatException(error);
                     ObjSummary summary = ObjExporter.ExportFile(target, model);

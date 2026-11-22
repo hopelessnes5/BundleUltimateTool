@@ -42,6 +42,7 @@ namespace BundleUltimateTool
                     : (args ?? Array.Empty<string>());
 
                 string gameFolder = null;
+                int selectedEntry = -1;
                 var fileArgs = new System.Collections.Generic.List<string>();
                 for (int i = 0; i < effectiveArgs.Length; i++)
                 {
@@ -49,6 +50,13 @@ namespace BundleUltimateTool
                         i + 1 < effectiveArgs.Length)
                     {
                         gameFolder = effectiveArgs[i + 1];
+                        i++;
+                    }
+                    else if (string.Equals(effectiveArgs[i], "--select-entry", StringComparison.OrdinalIgnoreCase) &&
+                             i + 1 < effectiveArgs.Length &&
+                             int.TryParse(effectiveArgs[i + 1], out int entryIndex))
+                    {
+                        selectedEntry = entryIndex;
                         i++;
                     }
                     else fileArgs.Add(effectiveArgs[i]);
@@ -70,7 +78,7 @@ namespace BundleUltimateTool
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
 
-                Application.Run(new MainForm(startupFile, gameFolder));
+                Application.Run(new MainForm(startupFile, gameFolder, selectedEntry));
                 ApplicationLog.Write("SHUTDOWN", "Application main loop exited normally.");
             }
             catch (Exception ex)

@@ -4,19 +4,48 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
+using BundleFormat.Bundle;
 using BundleFormat.IO;
 using BundleUltimateTool.Documents;
+using BundleUltimateTool.UI;
 
 namespace BundleUltimateTool
 {
     public partial class MainForm
     {
+        private const int AutoOpenBundleWarnLimit = 10000;
         private const int TextPreviewLimit = 256 * 1024;
         private const int HexPreviewLimit = 512;
+        private readonly System.Windows.Forms.Timer _openBundleTimer = new System.Windows.Forms.Timer { Interval = 350 };
 
         private void InitializeGameFolderUi()
         {
-            gameFileTreeView.AfterSelect += (s, e) => OnGameFileSelected();
+            _openBundleTimer.Tick += (s, e) =>
+            {
+                _openBundleTimer.Stop();
+                if (_openBundleTimer.Tag is string path && File.Exists(path))
+                {
+                    ApplicationLog.Write("SINGLE_OPEN", $"'{path}'");
+                    SetFilesMode(false);
+                    OpenBundle(path);
+                }
+            };
+            // Same activation pattern as PrototypeUltimateTool:MainForm.cs lines 527-539.
+            gameFileTreeView.AfterSelect += (s, e) =>
+            {
+                if (!gameFileTreeView.IsSelectionGestureInProgress) OnGameFileSelected();
+            };
+            gameFileTreeView.SelectedNodesChanged += (s, e) =>
+            {
+                if (_filesMode && !gameFileTreeView.IsSelectionGestureInProgress) OnGameFileSelected();
+            };
+            gameFileTreeView.NodeMouseClick += (s, e) =>
+            {
+                OnGameFileSelected();
+                if (_filesMode && e.Node?.Tag is GameFileEntry clicked && clicked.IsBundle)
+                    ScheduleBundleOpen(clicked.FullPath);
+                else _openBundleTimer.Stop();
+            };
             gameFileTreeView.NodeMouseDoubleClick += (s, e) => ActivateGameNode(e.Node);
             gameFileTreeView.NodeActivated += (s, e) => ActivateGameNode(e.Node);
             gameFileTreeView.BeforeExpand += (s, e) => ExpandGameDirectory(e.Node);
@@ -68,10 +97,54 @@ namespace BundleUltimateTool
                 _gameFolderModel.SetRoot(path);
                 _gameFolderPath = path;
                 SaveSettings();
-                if (switchToFileMode) SetFilesMode(true);
-                else RefreshGameTree();
+
+                // Prototype-style indexing: read ONLY the 48-byte header per archive.
+                // Tables are read lazily (and cached per archive) when a bundle is expanded.
+                ClearDocuments();
+                IReadOnlyList<string> bundles = _gameFolderModel.FindBundleFiles();
+                ApplicationLog.Write("BUNDLE_DISCOVERED", $"root='{_gameFolderModel.RootPath}', count={bundles.Count}");
+                ApplicationLog.Write("INDEX_MODE", "header-only, per-archive lazy table cache");
+                int failures = 0;
+                foreach (string bundlePath in bundles)
+                {
+                    if (IsDisposed || Disposing) return;
+                    try
+                    {
+                        BundleHeader header = BundleIndex.ReadHeader(bundlePath);
+                        string relative = Path.GetRelativePath(_gameFolderModel.RootPath, bundlePath).Replace('\\', '/');
+                        _openDocuments.Add(new BundleDocument(bundlePath, header, _readerCache, relative));
+                    }
+                    catch (Exception ex)
+                    {
+                        failures++;
+                        ApplicationLog.Write("AUTO_OPEN_FAILED", $"'{bundlePath}': {ex.Message}", ex);
+                    }
+                }
+                if (IsDisposed || Disposing) return;
+                ApplicationLog.Write("STARTUP_STEP", "index done, building tree");
+                _document = _openDocuments.FirstOrDefault();
+                _compositeMode = true;
+                RefreshGameTypeFilter();
+                ApplicationLog.Write("STARTUP_STEP", "after type filter");
+                SetFilesMode(false);
+                ApplicationLog.Write("STARTUP_STEP", "after set files mode");
                 UpdateGameStatus();
                 _commands?.Refresh();
+
+                int totalEntries = _openDocuments.Sum(doc => doc.EntryCount);
+                ApplicationLog.Write("AUTO_OPEN_OK",
+                    $"root='{_gameFolderModel.RootPath}', bundles={_openDocuments.Count}, entries={totalEntries}, failures={failures}");
+                if (bundles.Count >= AutoOpenBundleWarnLimit)
+                {
+                    string warning = string.Format(UiLocalization.TranslateId("autoOpen.capWarning",
+                        "A large number of bundles were discovered ({0}); loading may be slow.", _uiLanguage), bundles.Count);
+                    SetStatus(warning);
+                }
+                else
+                {
+                    SetStatus(string.Format(UiLocalization.TranslateId("status.autoOpened",
+                        "Bundles: {0}, entries: {1}", _uiLanguage), _openDocuments.Count, totalEntries));
+                }
                 ApplicationLog.Write("GAME_FOLDER_OK",
                     $"root='{_gameFolderModel.RootPath}', items={_gameFolderModel.Items.Count}");
             }
@@ -112,6 +185,8 @@ namespace BundleUltimateTool
             }
             filePreviewTextBox.Visible = false;
             previewMessageLabel.Visible = false;
+            if (channelToolStrip != null) channelToolStrip.Visible = false;
+            previewScrollPanel.Visible = !files;
             previewBox.Visible = !files && _document != null;
             UpdateWorkspaceState();
             _commands?.Refresh();
@@ -133,13 +208,18 @@ namespace BundleUltimateTool
 
                 string folderName = Path.GetFileName(_gameFolderModel.RootPath.TrimEnd(Path.DirectorySeparatorChar));
                 var rootEntry = new GameFileEntry(folderName, _gameFolderModel.RootPath, true, 0, DateTime.MinValue);
-                var root = new TreeNode(folderName) { Tag = rootEntry, ToolTipText = _gameFolderModel.RootPath };
+                var root = new TreeNode(folderName)
+                {
+                    Tag = rootEntry, ToolTipText = _gameFolderModel.RootPath,
+                    ImageIndex = TreeIcons.Folder
+                };
 
                 string extensionFilter = GetFileExtensionFilter();
                 IReadOnlyList<GameFileEntry> filtered = _gameFolderModel.ApplyFilter(
                     searchTextBox?.Text, extensionFilter);
                 AddGameNodes(root, filtered);
                 gameFileTreeView.Nodes.Add(root);
+                SortGameNodes(gameFileTreeView.Nodes, sortComboBox?.SelectedIndex ?? 0);
                 root.Expand();
                 if (noResultsPanel != null) noResultsPanel.Visible = filtered.Count == 0;
             }
@@ -147,15 +227,58 @@ namespace BundleUltimateTool
             UpdateWorkspaceState();
         }
 
+        // Same port as MainForm.Bundle.cs: sort items with the original 8-mode switch,
+        // then put directories first (stable OrderBy preserves the chosen order).
+        private static void SortGameNodes(TreeNodeCollection nodes, int mode)
+        {
+            TreeNode[] children = nodes.Cast<TreeNode>().ToArray();
+            foreach (TreeNode child in children) SortGameNodes(child.Nodes, mode);
+            var list = children.Select(node =>
+            {
+                GameFileEntry entry = node.Tag as GameFileEntry;
+                return new TreeSortItem
+                {
+                    Node = node,
+                    SortName = node.Text ?? string.Empty,
+                    Size = entry?.Length ?? 0,
+                    PixelCount = 0,
+                    Extension = entry?.Extension ?? string.Empty
+                };
+            }).ToList();
+
+            switch (mode)
+            {
+                case 1: list = list.OrderBy(n => n.SortName, StringComparer.OrdinalIgnoreCase).ToList(); break;
+                case 2: list = list.OrderByDescending(n => n.SortName, StringComparer.OrdinalIgnoreCase).ToList(); break;
+                case 3: list = list.OrderByDescending(n => n.Size).ToList(); break;
+                case 4: list = list.OrderBy(n => n.Size).ToList(); break;
+                case 5: list = list.OrderByDescending(n => n.PixelCount).ToList(); break;
+                case 6: list = list.OrderBy(n => n.PixelCount).ToList(); break;
+                case 7: list = list.OrderBy(n => n.Extension, StringComparer.OrdinalIgnoreCase).ToList(); break;
+            }
+
+            var reordered = list
+                .OrderBy(n => n.Node.Tag is GameFileEntry e && e.IsDirectory ? 0 : 1)
+                .Select(n => n.Node).ToArray();
+            nodes.Clear();
+            nodes.AddRange(reordered);
+        }
+
         private void AddGameNodes(TreeNode parent, IEnumerable<GameFileEntry> entries)
         {
             foreach (GameFileEntry entry in entries)
             {
+                int imageIndex = entry.IsDirectory
+                    ? TreeIcons.Folder
+                    : GamePathRules.GetExtensionLabel(entry.FullPath) == "DDS"
+                        ? TreeIcons.Texture
+                        : TreeIcons.File;
                 var node = new TreeNode(entry.DisplayText)
                 {
                     Tag = entry,
                     ToolTipText = entry.FullPath,
-                    ContextMenuStrip = gameFileContextMenu
+                    ContextMenuStrip = gameFileContextMenu,
+                    ImageIndex = imageIndex
                 };
                 if (entry.IsDirectory) node.Nodes.Add(new TreeNode(string.Empty)); // expand cue
                 parent.Nodes.Add(node);
@@ -213,11 +336,25 @@ namespace BundleUltimateTool
             PreviewGameFile(entry);
             UpdateWorkspaceState();
             _commands?.Refresh();
+
+            // Single click on an archive opens it; the short delay avoids opening bundles
+            // while the user is just moving through the list with the keyboard.
+            if (_filesMode && entry.IsBundle) ScheduleBundleOpen(entry.FullPath);
+            else _openBundleTimer.Stop();
+        }
+
+        private void ScheduleBundleOpen(string path)
+        {
+            _openBundleTimer.Tag = path;
+            _openBundleTimer.Stop();
+            _openBundleTimer.Start();
         }
 
         private void PreviewGameFile(GameFileEntry entry)
         {
             if (entry == null) return;
+            if (channelToolStrip != null) channelToolStrip.Visible = false;
+            previewScrollPanel.Visible = false;
             previewBox.Visible = false;
             previewMessageLabel.Visible = false;
             filePreviewTextBox.Visible = true;
@@ -318,6 +455,7 @@ namespace BundleUltimateTool
             try
             {
                 _gameFolderModel.Refresh();
+                RefreshGameTypeFilter();
                 RefreshGameTree();
                 UpdateGameStatus();
             }
@@ -361,7 +499,7 @@ namespace BundleUltimateTool
             if (_gameFolderModel.HasRoot)
             {
                 foreach (string extension in _gameFolderModel.Items
-                    .Where(entry => !entry.IsDirectory)
+                    .Where(entry => !entry.IsDirectory && GamePathRules.IsRelevantExtension(entry.Extension))
                     .Select(entry => entry.Extension)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(label => label, StringComparer.OrdinalIgnoreCase))

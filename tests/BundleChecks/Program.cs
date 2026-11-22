@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
+using System.ComponentModel;
 using System.Globalization;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
@@ -10,6 +12,8 @@ using BundleFormat.IO;
 using BundleFormat.Primitives;
 using BundleFormat.Tables;
 using BundleFormat.Textures;
+using BundleUltimateTool.Documents;
+using BundleUltimateTool.UI;
 
 const string FixtureRoot = @"F:\repos\nfs-bundle-explorer\src\test";
 
@@ -143,6 +147,19 @@ WithFixture("VEHICLELIST.BUNDLE", reader =>
     }
     naiveCrc ^= 0xFFFFFFFFu;
     Eq("FILEINFO VEHICLELIST[0] hdrCrc matches naive byte-by-byte CRC", vehicleListInfo.HeaderCrc, naiveCrc);
+
+    BundleIndex idx = BundleIndex.Read(Path.Combine(FixtureRoot, "VEHICLELIST.BUNDLE"));
+    Eq("BUNDLEINDEX VEHICLELIST: numFiles", idx.Header.NumFiles, reader.Header.NumFiles);
+    Eq("BUNDLEINDEX VEHICLELIST: headersOffset", idx.Header.HeadersOffset, reader.Header.HeadersOffset);
+    Eq("BUNDLEINDEX VEHICLELIST: bodysOffset", idx.Header.BodysOffset, reader.Header.BodysOffset);
+    Eq("BUNDLEINDEX VEHICLELIST: dataEnd", idx.Header.DataEnd, reader.Header.DataEnd);
+    Eq("BUNDLEINDEX VEHICLELIST: entries count", idx.Entries.Count, reader.Entries.Count);
+    BundleEntry ie = idx.Entries[0];
+    Eq("BUNDLEINDEX VEHICLELIST[0]: hash", ie.Raw.Hash, e.Raw.Hash);
+    Eq("BUNDLEINDEX VEHICLELIST[0]: fileType", ie.FileType, e.FileType);
+    Eq("BUNDLEINDEX VEHICLELIST[0]: hdrCompSize", ie.Raw.HdrCompSize, e.Raw.HdrCompSize);
+    Eq("BUNDLEINDEX VEHICLELIST[0]: dataCompSize", ie.Raw.DataCompSize, e.Raw.DataCompSize);
+    Eq("BUNDLEINDEX VEHICLELIST[0]: hdrUncomp masked", ie.MaskedHdrUncompSize, e.MaskedHdrUncompSize);
 });
 
 WithFixture("VEHICLETEX.BIN", reader =>
@@ -410,6 +427,35 @@ WithFixture("VEH_118158_MS.BIN", reader =>
         Math.Abs(objX - rawX) < 1e-5f && Math.Abs(objY - rawY) < 1e-5f && Math.Abs(objZ - rawZ) < 1e-5f,
         $"raw=({rawX},{rawY},{rawZ}), obj=({objX},{objY},{objZ})");
 
+    IReadOnlyList<RenderMesh> renderMeshes = ModelRenderConverter.Convert(model);
+    Eq("RENDERMESH mesh count", renderMeshes.Count, model.Meshes.Count);
+    Eq("RENDERMESH vertex count", renderMeshes.Sum(item => item.Positions.Length), 4);
+    Eq("RENDERMESH index count (2 faces x 3)", renderMeshes.Sum(item => item.Indices.Length), 6);
+    Vector3 firstRenderPosition = renderMeshes[0].Positions[0];
+    // Prototype viewer conversion: (X, -Z, Y) * 1000 into Z-up display space.
+    float viewX = objX * 1000f, viewY = -objZ * 1000f, viewZ = objY * 1000f;
+    Check("RENDERMESH first position matches Prototype viewer transform",
+        Math.Abs(firstRenderPosition.X - viewX) < 0.01f &&
+        Math.Abs(firstRenderPosition.Y - viewY) < 0.01f &&
+        Math.Abs(firstRenderPosition.Z - viewZ) < 0.01f,
+        $"render=({firstRenderPosition.X},{firstRenderPosition.Y},{firstRenderPosition.Z}) expected=({viewX},{viewY},{viewZ})");
+    RenderBounds renderBounds = ModelRenderConverter.GetBounds(renderMeshes);
+    Check("RENDERMESH bounds computed", renderBounds.Radius > 0f, $"radius={renderBounds.Radius}");
+
+    // Texture preview transform checks (pure, no WinForms).
+    byte[] srcRgba = { 10, 20, 30, 40,  50, 60, 70, 80,  90, 100, 110, 120,  130, 140, 150, 160 };
+    byte[] all = TexturePreviewTransform.Transform(srcRgba, 2, 2, 4, true, true, true, true, true, false);
+    Check("TEXPREVIEW RGBA identity", all.SequenceEqual(srcRgba), "all channels");
+    byte[] rgbOnly = TexturePreviewTransform.Transform(srcRgba, 2, 2, 4, true, true, true, true, false, false);
+    Check("TEXPREVIEW RGB mode forces alpha 255", rgbOnly[3] == 255 && rgbOnly[7] == 255 && rgbOnly[15] == 255, "alpha forced");
+    byte[] noG = TexturePreviewTransform.Transform(srcRgba, 2, 2, 4, true, false, true, true, true, false);
+    Check("TEXPREVIEW G channel zeroed", noG[1] == 0 && noG[5] == 0 && noG[0] == 10 && noG[2] == 30, "G zeroed");
+    // Prototype's ProcessChannels only makes a single active color grayscale when A is off.
+    byte[] redGray = TexturePreviewTransform.Transform(srcRgba, 2, 2, 4, true, false, false, false, false, false);
+    Check("TEXPREVIEW single channel grayscale", redGray[0] == 10 && redGray[1] == 10 && redGray[2] == 10, "R as gray");
+    byte[] flipped = TexturePreviewTransform.Transform(srcRgba, 2, 2, 4, true, true, true, true, true, true);
+    Check("TEXPREVIEW V-flip swaps rows", flipped[0] == 90 && flipped[4] == 130 && flipped[8] == 10 && flipped[12] == 50, "rows flipped");
+
     int parsedModels = 0;
     int zeroFaceModels = 0;
     int failedModels = 0;
@@ -436,6 +482,40 @@ WithFixture("VEH_118158_MS.BIN", reader =>
         }
     }
     Console.WriteLine($"INFO  | model scan summary | parsed={parsedModels}, zeroFace={zeroFaceModels}, failed={failedModels}");
+
+    // Functional regression: every model entry in the fixture must be exportable to OBJ
+    // through the same code path used by the UI command.
+    string objTemp = Path.Combine(Path.GetTempPath(), "BundleUltimateTool-ObjChecks-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(objTemp);
+    int objOk = 0;
+    int objFailed = 0;
+    foreach (BundleEntry modelEntry in reader.Entries.Where(entry => entry.FileType == (uint)NfsFileType.Model))
+    {
+        try
+        {
+            byte[] mh = ZLibAdapter.Decompress(
+                reader.ReadBytes(modelEntry.AbsoluteHeaderOffset, (int)modelEntry.Raw.HdrCompSize),
+                (int)modelEntry.MaskedHdrUncompSize);
+            byte[] mb = modelEntry.Raw.DataCompSize > 0
+                ? ZLibAdapter.Decompress(
+                    reader.ReadBytes(modelEntry.AbsoluteBodyOffset, (int)modelEntry.Raw.DataCompSize),
+                    (int)modelEntry.MaskedDataUncompSize)
+                : Array.Empty<byte>();
+            NfsModel exportModel = NfsModel.InitFromData(mh, mb);
+            string path = Path.Combine(objTemp, $"file_{modelEntry.Index:D4}.obj");
+            ObjExporter.ExportFile(path, exportModel);
+            Check($"OBJ export entry {modelEntry.Index} produced file",
+                File.Exists(path) && new FileInfo(path).Length > 0, path);
+            objOk++;
+        }
+        catch (Exception ex)
+        {
+            objFailed++;
+            Console.WriteLine($"FAIL | OBJ export entry {modelEntry.Index} | {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+    Console.WriteLine($"INFO  | OBJ export regression | ok={objOk}, failed={objFailed}");
+    Check("OBJ export regression: no failures", objFailed == 0, $"ok={objOk}, failed={objFailed}");
 });
 
 // Synthetic model helpers.
@@ -448,11 +528,11 @@ List<NfsFace> degenerate = NfsModel.TriStripToTriList(new ushort[] { 0, 0, 2, 3 
 Eq("TriStripToTriList([0,0,2,3]) skips degenerate",
     string.Join("|", degenerate.Select(face => $"{face.A},{face.B},{face.C}")), "3,2,0");
 
-// Synthetic color/alpha blocks: no 255-rounding in the 5/6/5 expansion.
+// PrototypeUltimateTool:DdsDecoder uses *255/31 expansion (full-range 565).
 byte[] dxt1Block = { 0x00, 0xF8, 0x1F, 0x00, 0x00, 0x00, 0x00, 0x00 };
 byte[] dxt1Pixels = DxtDecoder.Decode(dxt1Block, 4, 4, DdsCodec.FourCcDxt1);
-Check("DXT1 first pixel from c0=0xF800 is (248,0,0)",
-    dxt1Pixels[0] == 248 && dxt1Pixels[1] == 0 && dxt1Pixels[2] == 0,
+Check("DXT1 first pixel from c0=0xF800 is (255,0,0) per Prototype",
+    dxt1Pixels[0] == 255 && dxt1Pixels[1] == 0 && dxt1Pixels[2] == 0,
     $"RGB=({dxt1Pixels[0]},{dxt1Pixels[1]},{dxt1Pixels[2]})");
 byte[] dxt5Block = new byte[16];
 dxt5Block[0] = 255; // a0
@@ -525,6 +605,23 @@ Eq("DEFS synthetic[0].offset", parsedDefs.Entries[0].Offset, 100u);
 Eq("DEFS synthetic[1].type", parsedDefs.Entries[1].Type, 18u);
 Eq("DEFS synthetic[1].offset", parsedDefs.Entries[1].Offset, 200u);
 
+// ---- original-style file type labels ----
+Eq("LABEL texture", NfsFileTypeInfo.FileTypeLabel(1), "texture");
+Eq("LABEL material", NfsFileTypeInfo.FileTypeLabel(2), "material");
+Eq("LABEL model", NfsFileTypeInfo.FileTypeLabel(5), "model");
+Eq("LABEL defs table", NfsFileTypeInfo.FileTypeLabel(18), "defs table");
+Eq("LABEL strings", NfsFileTypeInfo.FileTypeLabel(513), "strings");
+Eq("LABEL unknown 261", NfsFileTypeInfo.FileTypeLabel(261), "unknown");
+Check("LABEL Describe still keeps numeric suffix", NfsFileTypeInfo.Describe(1) == "texture (1)",
+    NfsFileTypeInfo.Describe(1));
+Check("CONTEXT texture -> DDS only, not OBJ",
+    NfsFileTypeInfo.SupportsTextureExport(1) && !NfsFileTypeInfo.SupportsModelExport(1), "texture=1");
+Check("CONTEXT model -> OBJ only, not DDS",
+    NfsFileTypeInfo.SupportsModelExport(5) && !NfsFileTypeInfo.SupportsTextureExport(5), "model=5");
+Check("CONTEXT strings/defs classifiers",
+    NfsFileTypeInfo.SupportsStringsSave(513) && NfsFileTypeInfo.SupportsDefsView(18) &&
+    !NfsFileTypeInfo.SupportsTextureExport(513), "strings=513, defs=18");
+
 // ---- game path rules ----
 Check("PATH IsBundleFile .bundle", GamePathRules.IsBundleFile(@"C:\games\a.BUNDLE"), "true");
 Check("PATH IsBundleFile .bndl mixed case", GamePathRules.IsBundleFile("VEHICLELIST.BNDL"), "true");
@@ -539,6 +636,67 @@ Eq("PATH FormatSize KB", GamePathRules.FormatSize(2048), "2.0 KB");
 Eq("PATH FormatSize MB", GamePathRules.FormatSize(2 * 1024 * 1024), "2.0 MB");
 Eq("PATH GetExtensionLabel", GamePathRules.GetExtensionLabel("a.BUNDLE"), "BUNDLE");
 Eq("PATH GetExtensionLabel no extension", GamePathRules.GetExtensionLabel("README"), "FILE");
+
+// ---- game folder model / filters ----
+string browserRoot = Path.Combine(Path.GetTempPath(), "BundleUltimateTool-Browser-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(browserRoot);
+Directory.CreateDirectory(Path.Combine(browserRoot, "Sub"));
+File.WriteAllBytes(Path.Combine(browserRoot, "VEHICLE.BUNDLE"), new byte[] { 1, 2, 3 });
+File.WriteAllBytes(Path.Combine(browserRoot, "other.BIN"), new byte[2048]);
+File.WriteAllBytes(Path.Combine(browserRoot, "notes.txt"), new byte[] { 65 });
+var browser = new GameFolderModel();
+browser.SetRoot(browserRoot);
+Eq("BROWSER items include folder and three files", browser.Items.Count, 4);
+var binOnly = browser.ApplyFilter(null, "BIN");
+Check("BROWSER extension filter BIN is case-insensitive",
+    binOnly.Count(item => !item.IsDirectory) == 1 &&
+    binOnly.Any(item => !item.IsDirectory && item.Name == "other.BIN"),
+    string.Join(", ", binOnly.Select(item => item.Name)));
+Check("BROWSER directories remain when a type filter is active",
+    binOnly.Any(item => item.IsDirectory), "folder visible for navigation");
+var nameSearch = browser.ApplyFilter("veh", null);
+Check("BROWSER search matches name",
+    nameSearch.Any(item => item.Name == "VEHICLE.BUNDLE"),
+    string.Join(", ", nameSearch.Select(item => item.Name)));
+var extensionSearch = browser.ApplyFilter("bin", null);
+Check("BROWSER search matches extension",
+    extensionSearch.Any(item => item.Name == "other.BIN"),
+    string.Join(", ", extensionSearch.Select(item => item.Name)));
+GameFileEntry folderEntry = browser.Items.First(item => item.IsDirectory);
+Check("BROWSER folder display marker", folderEntry.DisplayText.StartsWith("[folder]"), folderEntry.DisplayText);
+GameFileEntry binEntry = browser.Items.First(item => item.Name == "other.BIN");
+Check("BROWSER file display uses KB with one decimal",
+    binEntry.DisplayText.Contains("2") && binEntry.DisplayText.Contains("KB"), binEntry.DisplayText);
+browser.Navigate("Sub");
+Eq("BROWSER navigate relative path", browser.CurrentRelativePath, "Sub");
+browser.NavigateUp();
+Eq("BROWSER navigate up returns to root", browser.CurrentRelativePath, string.Empty);
+
+var fixtureModel = new GameFolderModel();
+fixtureModel.SetRoot(FixtureRoot);
+IReadOnlyList<string> discovered = fixtureModel.FindBundleFiles();
+Eq("BUNDLES discovered in fixture folder", discovered.Count, 3);
+Eq("BUNDLES cap maxFiles=1", fixtureModel.FindBundleFiles(1).Count, 1);
+Check("BUNDLES ordered by relative path",
+    discovered[0].EndsWith("VEHICLELIST.BUNDLE", StringComparison.OrdinalIgnoreCase),
+    string.Join(", ", discovered.Select(Path.GetFileName)));
+var tempBrowserModel = new GameFolderModel();
+tempBrowserModel.SetRoot(browserRoot);
+IReadOnlyList<string> tempBundles = tempBrowserModel.FindBundleFiles();
+Check("BUNDLES non-bundle files excluded",
+    tempBundles.Count == 2 && tempBundles.All(path => GamePathRules.IsBundleFile(path)),
+    string.Join(", ", tempBundles.Select(Path.GetFileName)));
+
+// ---- themed property grid row generation ----
+IReadOnlyList<PropertyRow> propertyRows = PropertyRowBuilder.Build(new SamplePropertySource());
+Check("THEMEDGRID first row is a category",
+    propertyRows.Count > 0 && propertyRows[0].IsCategory && propertyRows[0].Name == "File Info",
+    propertyRows.Count > 0 ? propertyRows[0].Name : "<empty>");
+Check("THEMEDGRID DisplayName and value honoured",
+    propertyRows.Any(row => row.Name == "Header CRC32" && row.Value == "DEADBEEF"),
+    string.Join(", ", propertyRows.Select(row => row.Name)));
+Eq("THEMEDGRID categories grouped", propertyRows.Count(row => row.IsCategory), 2);
+Eq("THEMEDGRID null selection yields no rows", PropertyRowBuilder.Build(null).Count, 0);
 
 // ---- localization consistency ----
 Dictionary<string, string> englishCatalog = new(StringComparer.Ordinal);
@@ -690,8 +848,33 @@ foreach ((string label, byte[] bytes) in negativeCases)
         Directory.GetFiles(workDirectory, "*.tmp").Length == 0, "temp directory clean");
 }
 
+// Regression for the reported UI crash: a .bin in a game folder can have a valid bnd2
+// header but a bogus table. BundleIndex.TryRead must reject it without throwing.
+string bogusBundle = Path.Combine(Path.GetTempPath(), "BundleUltimateTool-bogus-" + Guid.NewGuid().ToString("N") + ".bin");
+byte[] bogusBytes = File.ReadAllBytes(Path.Combine(FixtureRoot, "VEHICLELIST.BUNDLE"));
+Buffer.BlockCopy(BitConverter.GetBytes(0u), 0, bogusBytes, 48 + 32, 4);      // hdrCompSize = 0
+Buffer.BlockCopy(BitConverter.GetBytes(0xF21BC06Fu), 0, bogusBytes, 48 + 48, 4); // hdrOffset
+File.WriteAllBytes(bogusBundle, bogusBytes);
+bool rejected = !BundleIndex.TryRead(bogusBundle, out BundleIndex bogusIndex, out string bogusError);
+Check("BUNDLEINDEX bogus table rejected by TryRead", rejected && bogusIndex == null, bogusError ?? "no error");
+bool readHeaderOk = BundleIndex.ReadHeader(bogusBundle).NumFiles == 1;
+Check("BUNDLEINDEX bogus table still indexes by header", readHeaderOk, "header-only indexing");
+File.Delete(bogusBundle);
+
 Console.WriteLine($"INFO  | TOTAL PASS COUNT | {passes}");
 Console.WriteLine(failures == 0
     ? "ALL CHECKS PASSED"
     : $"{failures} CHECK(S) FAILED");
 return failures == 0 ? 0 : 1;
+
+internal sealed class SamplePropertySource
+{
+    [Category("File Info"), DisplayName("Header CRC32")]
+    public string Crc => "DEADBEEF";
+
+    [Category("File Info")]
+    public int Count => 7;
+
+    [Category("Offsets"), DisplayName("Header absolute")]
+    public long Offset => 128;
+}

@@ -9,24 +9,29 @@ using System.Windows.Forms;
 using BundleFormat.Bundle;
 using BundleFormat.Compression;
 using BundleFormat.Textures;
+using BundleUltimateTool.Documents;
+using BundleUltimateTool.UI;
 
 namespace BundleUltimateTool
 {
     public partial class MainForm
     {
         private Bitmap _previewBitmap;
+        private Bitmap _currentSourceBmp;
+        private NfsTexture _previewTextureSource;
+        private ToolStripLabel resolutionLabel;
 
-        private NfsTexture TryLoadTexture(BundleEntry entry, out string error)
+        private NfsTexture TryLoadTexture(BundleDocument document, BundleEntry entry, out string error)
         {
             error = null;
             try
             {
                 byte[] headerBytes = ZLibAdapter.Decompress(
-                    _document.Reader.ReadBytes(entry.AbsoluteHeaderOffset, (int)entry.Raw.HdrCompSize),
+                    document.Reader.ReadBytes(entry.AbsoluteHeaderOffset, (int)entry.Raw.HdrCompSize),
                     (int)entry.MaskedHdrUncompSize);
                 byte[] imageBytes = entry.Raw.DataCompSize > 0
                     ? ZLibAdapter.Decompress(
-                        _document.Reader.ReadBytes(entry.AbsoluteBodyOffset, (int)entry.Raw.DataCompSize),
+                        document.Reader.ReadBytes(entry.AbsoluteBodyOffset, (int)entry.Raw.DataCompSize),
                         (int)entry.MaskedDataUncompSize)
                     : Array.Empty<byte>();
 
@@ -50,10 +55,15 @@ namespace BundleUltimateTool
         {
             _previewBitmap?.Dispose();
             _previewBitmap = null;
+            _currentSourceBmp?.Dispose();
+            _currentSourceBmp = null;
+            _previewTextureSource = null;
             previewBox.Image = null;
 
             if (texture == null)
             {
+                channelToolStrip.Visible = false;
+                if (resolutionLabel != null) resolutionLabel.Text = "";
                 previewMessageLabel.Text = !hasSelection
                     ? UiLocalization.TranslateId("preview.noSelection", "Select a texture entry to preview it.", _uiLanguage)
                     : error != null
@@ -67,12 +77,19 @@ namespace BundleUltimateTool
 
             try
             {
-                _previewBitmap = CreateBitmap(texture, texture.Decompress());
-                previewBox.Image = _previewBitmap;
+                _previewTextureSource = texture;
+                // Input step: NFS textures provide decompressed RGB/RGBA bytes via
+                // NfsTexture.Decompress(). Convert to the BGRA source bitmap expected by
+                // the ported ProcessChannels pipeline (Prototype DdsDecoder.DecodeDds output).
+                byte[] pixels = texture.Decompress();
+                _currentSourceBmp = CreateSourceBitmap(texture.GetWidth(), texture.GetHeight(), texture.GetNumComponents(), pixels);
+                channelToolStrip.Visible = true;
+                RefreshTexturePreview();
                 previewMessageLabel.Visible = false;
             }
             catch (Exception ex)
             {
+                channelToolStrip.Visible = false;
                 ApplicationLog.Write("PREVIEW_FAILED", ex.Message, ex);
                 previewMessageLabel.Text = string.Format(
                     UiLocalization.TranslateId("preview.failed", "Cannot preview texture: {0}", _uiLanguage),
@@ -81,44 +98,83 @@ namespace BundleUltimateTool
             }
         }
 
-        private static Bitmap CreateBitmap(NfsTexture texture, byte[] pixels)
+        private void SetChannels(bool r, bool g, bool b, bool a)
         {
-            int width = texture.GetWidth();
-            int height = texture.GetHeight();
-            var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
-            BitmapData data = bitmap.LockBits(new Rectangle(0, 0, width, height),
+            channelRButton.Checked = r;
+            channelGButton.Checked = g;
+            channelBButton.Checked = b;
+            channelAButton.Checked = a;
+            ApplyChannels();
+        }
+
+        private void ApplyChannels()
+        {
+            if (_previewBitmap != null)
+            {
+                previewBox.Image = null;
+                _previewBitmap.Dispose();
+                _previewBitmap = null;
+            }
+
+            if (_currentSourceBmp == null)
+            {
+                if (resolutionLabel != null) resolutionLabel.Text = "";
+                return;
+            }
+
+            // Port of Prototype MainForm.ApplyChannels (MainForm.cs:4863-4886).
+            _previewBitmap = TextureChannelProcessor.ProcessChannels(
+                _currentSourceBmp,
+                channelRButton.Checked,
+                channelGButton.Checked,
+                channelBButton.Checked,
+                channelAButton.Checked);
+
+            previewBox.Image = _previewBitmap;
+
+            if (resolutionLabel != null)
+                resolutionLabel.Text = $"{_currentSourceBmp.Width} × {_currentSourceBmp.Height}";
+        }
+
+        private void RefreshTexturePreview() => ApplyChannels();
+
+        private static Bitmap CreateSourceBitmap(int width, int height, int components, byte[] pixels)
+        {
+            var source = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            BitmapData data = source.LockBits(new Rectangle(0, 0, width, height),
                 ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             try
             {
-                byte[] rgba = pixels;
-                if (texture.GetNumComponents() == 3)
-                {
-                    rgba = new byte[width * height * 4];
-                    for (int i = 0; i < width * height; i++)
-                    {
-                        rgba[i * 4] = pixels[i * 3];
-                        rgba[i * 4 + 1] = pixels[i * 3 + 1];
-                        rgba[i * 4 + 2] = pixels[i * 3 + 2];
-                        rgba[i * 4 + 3] = 255;
-                    }
-                }
                 for (int y = 0; y < height; y++)
-                    Marshal.Copy(rgba, y * width * 4, IntPtr.Add(data.Scan0, y * data.Stride), width * 4);
+                {
+                    var row = new byte[width * 4];
+                    for (int x = 0; x < width; x++)
+                    {
+                        int src = (y * width + x) * components;
+                        int dst = x * 4;
+                        row[dst + 0] = components > 2 ? pixels[src + 2] : pixels[src]; // B
+                        row[dst + 1] = components > 1 ? pixels[src + 1] : pixels[src]; // G
+                        row[dst + 2] = pixels[src + 0]; // R
+                        row[dst + 3] = components >= 4 ? pixels[src + 3] : (byte)255;
+                    }
+                    Marshal.Copy(row, 0, IntPtr.Add(data.Scan0, y * data.Stride), row.Length);
+                }
             }
-            finally { bitmap.UnlockBits(data); }
-            return bitmap;
+            finally { source.UnlockBits(data); }
+            return source;
         }
+
+        // V-Flip, Fit/100%, mouse-wheel zoom removed: Prototype 2D viewer has no such controls.
 
         private void ExportTextures(bool selectedOnly)
         {
-            if (_document == null) return;
-            var textures = new List<BundleEntry>(_document.Entries
-                .Where(entry => entry.FileType == (uint)NfsFileType.Texture));
+            if (_openDocuments.Count == 0) return;
+            var textures = GetAllViews()
+                .Where(view => view.Entry.FileType == (uint)NfsFileType.Texture).ToList();
             if (selectedOnly)
             {
-                var selectedIndices = nodeTreeView.SelectedNodes.OfType<TreeNode>()
-                    .Select(node => node.Tag).OfType<int>().ToHashSet();
-                textures.RemoveAll(entry => !selectedIndices.Contains(entry.Index));
+                var selected = GetSelectedViews().Select(view => (view.Document, view.Entry.Index)).ToHashSet();
+                textures.RemoveAll(view => !selected.Contains((view.Document, view.Entry.Index)));
             }
             if (textures.Count == 0)
             {
@@ -138,12 +194,13 @@ namespace BundleUltimateTool
 
             int exported = 0;
             int failed = 0;
-            foreach (BundleEntry entry in textures)
+            foreach (BundleEntryView view in textures)
             {
-                string fileName = $"file_{entry.Index:D4}.dds";
+                BundleEntry entry = view.Entry;
+                string fileName = ExportFileName(view, "dds");
                 try
                 {
-                    NfsTexture texture = TryLoadTexture(entry, out string error);
+                    NfsTexture texture = TryLoadTexture(view.Document, entry, out string error);
                     if (texture == null) throw new BundleFormat.Primitives.BundleFormatException(error);
                     texture.SaveAsDdsFile(Path.Combine(folderDialog.SelectedPath, fileName));
                     exported++;

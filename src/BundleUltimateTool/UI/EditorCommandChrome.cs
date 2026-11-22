@@ -34,7 +34,7 @@ namespace BundleUltimateTool.UI
             ["cmd.tools.assemble"] = "\uE7B8",
             ["cmd.help.about"] = "\uE897",
             ["label.search"] = "\uE721",
-            ["view.mode2d"] = "\uE8B9"
+            ["view.mode2d"] = "\uE8B9", ["view.mode3d"] = "\uE7B8"
         };
         private static readonly string[] LegacyPrefixes = { "📂", "💾", "📤", "📦", "📁", "📥", "🖼️", "🧊", "🔍" };
 

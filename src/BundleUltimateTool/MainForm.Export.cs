@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Forms;
 using BundleFormat.Bundle;
+using BundleUltimateTool.Documents;
 
 namespace BundleUltimateTool
 {
@@ -10,19 +11,13 @@ namespace BundleUltimateTool
     {
         private void ExportRaw(bool selectedOnly)
         {
-            if (_document == null) return;
+            if (_openDocuments.Count == 0) return;
 
-            List<BundleEntry> entries;
+            List<BundleEntryView> views;
             if (selectedOnly)
             {
-                entries = nodeTreeView.SelectedNodes
-                    .OfType<TreeNode>()
-                    .Select(node => node.Tag)
-                    .OfType<int>()
-                    .Where(index => index >= 0 && index < _document.Entries.Count)
-                    .Select(index => _document.Entries[index])
-                    .ToList();
-                if (entries.Count == 0)
+                views = GetSelectedViews();
+                if (views.Count == 0)
                 {
                     MessageBox.Show(this,
                         UiLocalization.TranslateId("export.noSelection", "Select at least one entry in the tree.", _uiLanguage),
@@ -33,7 +28,7 @@ namespace BundleUltimateTool
             }
             else
             {
-                entries = _document.Entries.ToList();
+                views = GetAllViews();
             }
 
             using var folderDialog = new FolderBrowserDialog
@@ -43,18 +38,19 @@ namespace BundleUltimateTool
             };
             if (folderDialog.ShowDialog(this) != DialogResult.OK) return;
 
-            var extractor = new BundleEntryExtractor(_document.Reader.File);
             int exported = 0;
             int failed = 0;
-            foreach (BundleEntry entry in entries)
+            foreach (BundleEntryView view in views)
             {
-                string fileName = $"file_{entry.Index:D4}.nfs";
+                BundleEntry entry = view.Entry;
+                string fileName = ExportFileName(view, "nfs");
                 try
                 {
+                    var extractor = new BundleEntryExtractor(view.Document.Reader.File);
                     extractor.ExtractRawTo(entry, folderDialog.SelectedPath, fileName, out RawExtractResult metadata);
                     exported++;
                     ApplicationLog.Write("EXPORT_OK",
-                        $"{fileName}: {metadata} from '{_document.Path}' (entry {entry.Index}).");
+                        $"{fileName}: {metadata} from '{view.Document.Path}' (entry {entry.Index}).");
                 }
                 catch (Exception ex)
                 {

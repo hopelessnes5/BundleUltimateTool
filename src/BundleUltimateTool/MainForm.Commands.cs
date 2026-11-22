@@ -34,23 +34,7 @@ namespace BundleUltimateTool
                 [EditorDocumentCommandId.FolderUp] = () => NavigateGameUp(),
                 [EditorDocumentCommandId.OpenFromFolder] = () => OpenFromFolder(),
                 [EditorDocumentCommandId.CopyPath] = () => CopySelectedPaths()
-            }, id => id switch
-            {
-                EditorDocumentCommandId.ExportRawSelected or EditorDocumentCommandId.ExportRawAll =>
-                    !_filesMode && _document != null,
-                EditorDocumentCommandId.ExportTextureSelected or EditorDocumentCommandId.ExportTextureAll =>
-                    !_filesMode && _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.Texture),
-                EditorDocumentCommandId.ExportObjSelected or EditorDocumentCommandId.ExportObjAll =>
-                    !_filesMode && _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.Model),
-                EditorDocumentCommandId.SaveStrings =>
-                    !_filesMode && _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.StringsTable),
-                EditorDocumentCommandId.ViewDefs =>
-                    !_filesMode && _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.DefsTable),
-                EditorDocumentCommandId.FolderUp => _filesMode && _gameFolderModel.CurrentRelativePath.Length > 0,
-                EditorDocumentCommandId.OpenFromFolder or EditorDocumentCommandId.CopyPath =>
-                    _filesMode && gameFileTreeView.SelectedNode?.Tag is GameFileEntry,
-                _ => true
-            });
+            }, CanExecuteCommand);
 
             ToolStripCommandBinding.Bind(openMenuItem, _commands[EditorDocumentCommandId.Open]);
             ToolStripCommandBinding.Bind(openButton, _commands[EditorDocumentCommandId.Open]);
@@ -82,7 +66,66 @@ namespace BundleUltimateTool
             ToolStripCommandBinding.Bind(openFromFolderItem, _commands[EditorDocumentCommandId.OpenFromFolder]);
             ToolStripCommandBinding.Bind(copyPathItem, _commands[EditorDocumentCommandId.CopyPath]);
 
+            if (treeContextMenu != null)
+                treeContextMenu.Opening += (s, e) => UpdateTreeContextMenuState();
+            if (gameFileContextMenu != null)
+                gameFileContextMenu.Opening += (s, e) => _commands?.Refresh();
+
             aboutMenuItem.Click += (s, e) => OnAbout();
+        }
+
+        // Command enablement pattern ported from PrototypeUltimateTool MainForm.Commands.cs:
+        // central state evaluation, refreshed on document/selection changes.
+        private bool CanExecuteCommand(EditorDocumentCommandId id) => id switch
+        {
+            EditorDocumentCommandId.ExportRawSelected =>
+                !_filesMode && GetSelectedViews().Count > 0,
+            EditorDocumentCommandId.ExportRawAll =>
+                !_filesMode && _openDocuments.Count > 0,
+            EditorDocumentCommandId.ExportTextureSelected =>
+                !_filesMode && GetSelectedViews().Any(view => NfsFileTypeInfo.SupportsTextureExport(view.Entry.FileType)),
+            EditorDocumentCommandId.ExportTextureAll =>
+                !_filesMode && _openDocuments.Count > 0,
+            EditorDocumentCommandId.ExportObjSelected =>
+                !_filesMode && GetSelectedViews().Any(view => NfsFileTypeInfo.SupportsModelExport(view.Entry.FileType)),
+            EditorDocumentCommandId.ExportObjAll =>
+                !_filesMode && _openDocuments.Count > 0,
+            EditorDocumentCommandId.SaveStrings =>
+                !_filesMode && _openDocuments.Count > 0,
+            EditorDocumentCommandId.ViewDefs =>
+                !_filesMode && _openDocuments.Count > 0,
+            EditorDocumentCommandId.FolderUp => _filesMode && _gameFolderModel.CurrentRelativePath.Length > 0,
+            EditorDocumentCommandId.OpenFromFolder or EditorDocumentCommandId.CopyPath =>
+                _filesMode && gameFileTreeView.SelectedNode?.Tag is GameFileEntry,
+            _ => true
+        };
+
+        private void UpdateTreeContextMenuState()
+        {
+            _commands?.Refresh();
+            var selected = nodeTreeView == null || _filesMode
+                ? new List<BundleEntryView>()
+                : nodeTreeView.SelectedNodes
+                    .Select(node => node?.Tag)
+                    .OfType<BundleEntryView>()
+                    .ToList();
+
+            bool any = selected.Count > 0;
+            bool anyTexture = selected.Any(view => NfsFileTypeInfo.SupportsTextureExport(view.Entry.FileType));
+            bool anyModel = selected.Any(view => NfsFileTypeInfo.SupportsModelExport(view.Entry.FileType));
+            bool anyStrings = selected.Any(view => NfsFileTypeInfo.SupportsStringsSave(view.Entry.FileType));
+            bool anyDefs = selected.Any(view => NfsFileTypeInfo.SupportsDefsView(view.Entry.FileType));
+
+            if (exportRawSelectedContextItem != null)
+                exportRawSelectedContextItem.Enabled = any && CanExecuteCommand(EditorDocumentCommandId.ExportRawSelected);
+            if (exportTextureSelectedContextItem != null)
+                exportTextureSelectedContextItem.Enabled = anyTexture && CanExecuteCommand(EditorDocumentCommandId.ExportTextureSelected);
+            if (exportObjSelectedContextItem != null)
+                exportObjSelectedContextItem.Enabled = anyModel && CanExecuteCommand(EditorDocumentCommandId.ExportObjSelected);
+            if (saveStringsContextItem != null)
+                saveStringsContextItem.Enabled = anyStrings && CanExecuteCommand(EditorDocumentCommandId.SaveStrings);
+            if (viewDefsContextItem != null)
+                viewDefsContextItem.Enabled = anyDefs && CanExecuteCommand(EditorDocumentCommandId.ViewDefs);
         }
 
         private void OnOpenDialog()

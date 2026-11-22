@@ -25,6 +25,17 @@ public enum NfsFileType : uint
 
 public static class NfsFileTypeInfo
 {
+    /// <summary>Short labels used by the original tool's entry list (GetFileTypeString).</summary>
+    public static string FileTypeLabel(uint fileType) => fileType switch
+    {
+        1 => "texture",
+        2 => "material",
+        5 => "model",
+        18 => "defs table",
+        513 => "strings",
+        _ => "unknown"
+    };
+
     // Unknown numeric values stay representable; callers must never reject an entry for them.
     public static string Describe(uint fileType) => fileType switch
     {
@@ -46,6 +57,12 @@ public static class NfsFileTypeInfo
         771 => "deformation (771)",
         _ => $"unknown ({fileType})"
     };
+
+    // Pure classifiers used by context-menu enablement (covered by BundleChecks).
+    public static bool SupportsTextureExport(uint fileType) => fileType == 1;
+    public static bool SupportsModelExport(uint fileType) => fileType == 5;
+    public static bool SupportsStringsSave(uint fileType) => fileType == 513;
+    public static bool SupportsDefsView(uint fileType) => fileType == 18;
 }
 
 public static class BundleLayout

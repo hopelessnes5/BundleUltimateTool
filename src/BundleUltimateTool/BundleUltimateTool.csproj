@@ -17,6 +17,16 @@
 
   <ItemGroup>
     <None Update="Languages\*.xml" CopyToOutputDirectory="PreserveNewest" />
+    <None Remove="Shaders\Dx12Wireframe.hlsl" />
+    <EmbeddedResource Include="Shaders\Dx12Wireframe.hlsl">
+      <LogicalName>BundleUltimateTool.Shaders.Dx12Wireframe.hlsl</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D12" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
   </ItemGroup>
 
   <ItemGroup>

@@ -10,4 +10,11 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\BundleFormat\BundleFormat.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Plain model class: compiled directly so the UI project's single-file publish
+         target (which deletes loose DLLs) cannot break the test build. -->
+    <Compile Include="..\..\src\BundleUltimateTool\Documents\GameFolderModel.cs" Link="GameFolderModel.cs" />
+    <Compile Include="..\..\src\BundleUltimateTool\UI\PropertyRowBuilder.cs" Link="PropertyRowBuilder.cs" />
+    <Compile Include="..\..\src\BundleUltimateTool\UI\TexturePreviewTransform.cs" Link="TexturePreviewTransform.cs" />
+  </ItemGroup>
 </Project>

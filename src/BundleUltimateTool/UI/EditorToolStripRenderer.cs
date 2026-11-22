@@ -1,6 +1,5 @@
 using System;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace BundleUltimateTool.UI
@@ -21,23 +20,6 @@ namespace BundleUltimateTool.UI
                 e.Item is ToolStripButton button && button.Checked;
             e.TextColor = palette.ItemText(e.Item.Name, e.Item.Enabled, highlighted);
             base.OnRenderItemText(e);
-
-            // A checked toggle must be obvious without relying on text color alone.
-            // Keyboard/hover focus gets a thin dotted outline around the label.
-            Rectangle bounds = e.TextRectangle;
-            if (bounds.Width <= 0 || bounds.Height <= 0) return;
-            if (e.Item is ToolStripButton checkedButton && checkedButton.Checked)
-            {
-                var underline = new Rectangle(bounds.Left, bounds.Bottom - 2, bounds.Width, 2);
-                using var brush = new SolidBrush(palette.Accent);
-                e.Graphics.FillRectangle(brush, underline);
-            }
-            else if (e.Item.Selected && e.Item.Enabled)
-            {
-                var outline = new Rectangle(bounds.Left, bounds.Top, bounds.Width, bounds.Height);
-                using var pen = new Pen(palette.Accent, 1f) { DashStyle = DashStyle.Dot };
-                e.Graphics.DrawRectangle(pen, outline);
-            }
         }
 
         protected override void OnRenderItemImage(ToolStripItemImageRenderEventArgs e)

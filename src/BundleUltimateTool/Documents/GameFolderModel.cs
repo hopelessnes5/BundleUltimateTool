@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using BundleFormat.IO;
@@ -26,8 +27,8 @@ public sealed class GameFileEntry
     public bool IsBundle => !IsDirectory && GamePathRules.IsBundleFile(FullPath);
 
     public string DisplayText => IsDirectory
-        ? "[DIR] " + Name
-        : Name + " | " + GamePathRules.FormatSize(Length);
+        ? "[folder] " + Name
+        : Name + " | " + (Length / 1024.0).ToString("F1", CultureInfo.CurrentCulture) + " KB";
 }
 
 /// <summary>
@@ -148,8 +149,33 @@ public sealed class GameFolderModel
                 !string.Equals(entry.Extension, extensionFilter, StringComparison.OrdinalIgnoreCase)) return false;
             if (needle.Length == 0) return true;
             return entry.Name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   entry.Extension.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
                    entry.DisplayText.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
         }).ToList();
+    }
+
+    /// <summary>
+    /// Recursively discovers bundles under the root, ordered by relative path.
+    /// Enumerates lazily and tolerates access errors.
+    /// </summary>
+    public IReadOnlyList<string> FindBundleFiles(int maxFiles = int.MaxValue)
+    {
+        if (!HasRoot || maxFiles <= 0) return Array.Empty<string>();
+        var found = new List<string>();
+        try
+        {
+            foreach (string path in Directory.EnumerateFiles(RootPath, "*", SearchOption.AllDirectories))
+            {
+                if (!GamePathRules.IsBundleFile(path)) continue;
+                found.Add(path);
+                if (found.Count >= maxFiles) break;
+            }
+        }
+        catch (UnauthorizedAccessException) { /* keep whatever was discoverable */ }
+        catch (IOException) { /* keep whatever was discoverable */ }
+
+        found.Sort((a, b) => string.Compare(RelativeToRoot(a), RelativeToRoot(b), StringComparison.OrdinalIgnoreCase));
+        return found;
     }
 
     public string GetRelativePath(GameFileEntry entry)

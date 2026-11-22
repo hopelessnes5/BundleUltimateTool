@@ -6,6 +6,7 @@ using System.Windows.Forms;
 using BundleUltimateTool.Commands;
 using BundleUltimateTool.Documents;
 using BundleUltimateTool.Settings;
+using BundleUltimateTool.Rendering;
 using BundleUltimateTool.UI;
 
 namespace BundleUltimateTool
@@ -43,6 +44,7 @@ namespace BundleUltimateTool
         private ToolStrip filterToolStrip;
         private ToolStripTextBox searchTextBox;
         private ToolStripComboBox typeFilterComboBox;
+        private ToolStripComboBox sortComboBox;
         private ToolStripButton archiveModeButton;
         private ToolStripButton filesModeButton;
         private ToolStripButton selectGameFolderButton;
@@ -59,9 +61,19 @@ namespace BundleUltimateTool
 
         private ToolStrip viewModeToolStrip;
         private ToolStripButton mode2DButton;
+        private ToolStripButton mode3DButton;
+        private ToolStrip channelToolStrip;
+        private ToolStripButton channelRButton;
+        private ToolStripButton channelGButton;
+        private ToolStripButton channelBButton;
+        private ToolStripButton channelAButton;
+        private ToolStripButton textureModeRgbButton;
+        private ToolStripButton textureModeRgbaButton;
+        private Panel previewScrollPanel;
         private PictureBox previewBox;
+        private Model3DView model3DView;
         private TextBox filePreviewTextBox;
-        private PropertyGrid propGrid;
+        private ThemedPropertyGrid propGrid;
 
         private StatusStrip statusStrip;
         private ToolStripStatusLabel statusStateLabel;
@@ -81,11 +93,27 @@ namespace BundleUltimateTool
         private bool _applyingUiLocalization;
         private string _currentFilePath;
         private string _gameFolderPath;
+        private string _startupFile;
+        private string _startupGameFolder;
+        private bool _startupSwitchToFiles;
+        private int _startupSelectedEntry = -1;
+        private bool _startupHandled;
         private BundleDocument _document;
+        private readonly List<BundleDocument> _openDocuments = new();
+        private readonly BundleReaderCache _readerCache = new(4);
+        private bool _compositeMode;
+
+        private sealed class ShadingOption
+        {
+            internal ShadingOption(Dx12ShadingMode mode, string text) { Mode = mode; Text = text; }
+            internal Dx12ShadingMode Mode { get; }
+            internal string Text { get; }
+            public override string ToString() => Text;
+        }
         private readonly GameFolderModel _gameFolderModel = new();
         private bool _filesMode;
 
-        public MainForm(string startupFile = null, string gameFolderPath = null)
+        public MainForm(string startupFile = null, string gameFolderPath = null, int selectedEntry = -1)
         {
             Name = "app.main";
             Text = "Bundle Ultimate Tool";
@@ -105,11 +133,12 @@ namespace BundleUltimateTool
             ApplyLocalizationToUi();
             UpdateWorkspaceState();
 
-            if (!string.IsNullOrWhiteSpace(gameFolderPath)) ApplyGameFolder(gameFolderPath, switchToFileMode: true);
-            else if (!string.IsNullOrWhiteSpace(_gameFolderPath)) ApplyGameFolder(_gameFolderPath, switchToFileMode: false);
-
-            if (!string.IsNullOrWhiteSpace(startupFile)) OpenBundle(startupFile);
-            else if (!_filesMode) SetStatus(UiLocalization.TranslateId("status.ready", "Ready", _uiLanguage));
+            if (!string.IsNullOrWhiteSpace(gameFolderPath))
+            { _startupGameFolder = gameFolderPath; _startupSwitchToFiles = true; }
+            else if (!string.IsNullOrWhiteSpace(_gameFolderPath))
+            { _startupGameFolder = _gameFolderPath; _startupSwitchToFiles = false; }
+            _startupFile = startupFile;
+            _startupSelectedEntry = selectedEntry;
         }
 
         protected override void OnLoad(EventArgs e)
@@ -213,22 +242,26 @@ namespace BundleUltimateTool
             {
                 Name = "folder.breadcrumb", Visible = false, Overflow = ToolStripItemOverflow.Never
             };
+            // Up button removed: folder navigation is done by clicking the folder node.
             mainToolStrip.Items.AddRange(new ToolStripItem[]
             {
                 openButton, selectGameFolderButton, new ToolStripSeparator(),
-                folderUpButton, breadcrumbLabel, new ToolStripSeparator(), exportRawButton
+                breadcrumbLabel, new ToolStripSeparator(), exportRawButton
             });
 
-            // ---- Dense resource filter row ----
+            // ---- Dense resource filter row (copied layout pattern from PrototypeUltimateTool:MainForm.cs) ----
             filterToolStrip = new ToolStrip { Name = "toolbar.resourceBrowser", GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top, Renderer = renderer };
-            searchTextBox = new ToolStripTextBox { Name = "input.search", Size = new Size(76, 23) };
+            searchTextBox = new ToolStripTextBox { Name = "input.search", Size = new Size(80, 25) };
             typeFilterComboBox = new ToolStripComboBox
             {
                 Name = "input.type",
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Size = new Size(96, 23),
+                Size = new Size(118, 25),
+                AutoSize = false,
                 Enabled = false
             };
+            typeFilterComboBox.ComboBox.DrawMode = DrawMode.OwnerDrawFixed;
+            typeFilterComboBox.ComboBox.DrawItem += DrawThemedComboBoxItem;
             archiveModeButton = new ToolStripButton("Archive")
             {
                 Name = "cmd.view.archive", CheckOnClick = true, Checked = true,
@@ -247,16 +280,60 @@ namespace BundleUltimateTool
             {
                 if (filesModeButton.Checked && !_filesMode) SetFilesMode(true);
             };
+            sortComboBox = new ToolStripComboBox
+            {
+                Name = "input.sort", DropDownStyle = ComboBoxStyle.DropDownList, Size = new Size(120, 25)
+            };
+            // Copied from PrototypeUltimateTool:MainForm.cs (sort dropdown, lines 443-455).
+            sortComboBox.Items.AddRange(new object[]
+            {
+                "По умолчанию",
+                "По имени (А → Я)",
+                "По имени (Я → А)",
+                "По размеру (убыв.)",
+                "По размеру (возр.)",
+                "По разрешению (убыв.)",
+                "По разрешению (возр.)",
+                "По типу"
+            });
+            sortComboBox.SelectedIndex = 0;
+            sortComboBox.ComboBox.DrawMode = DrawMode.OwnerDrawFixed;
+            sortComboBox.ComboBox.DrawItem += DrawThemedComboBoxItem;
+            sortComboBox.SelectedIndexChanged += (s, e) =>
+            {
+                ApplicationLog.Write("SORT_CHANGED", $"mode={sortComboBox.SelectedIndex}, filesMode={_filesMode}");
+                if (_applyingUiLocalization) return;
+                if (_filesMode) RefreshGameTree(); else RebuildTree();
+            };
+            // Search field and Archive toggle removed as useless/space-consuming.
+            // The controls remain hidden so existing handlers stay valid.
+            searchTextBox.Visible = false;
+            archiveModeButton.Visible = false;
             filterToolStrip.Items.AddRange(new ToolStripItem[]
             {
-                archiveModeButton, filesModeButton, new ToolStripSeparator(),
-                new ToolStripLabel("Search") { Name = "label.search" }, searchTextBox,
+                filesModeButton, new ToolStripSeparator(),
+                new ToolStripLabel("Type:") { Name = "label.type" }, typeFilterComboBox,
                 new ToolStripSeparator(),
-                new ToolStripLabel("Type:") { Name = "label.type" }, typeFilterComboBox
+                new ToolStripLabel("Sort:") { Name = "label.sort" }, sortComboBox
             });
 
-            // ---- Tree ----
-            nodeTreeView = new MultiSelectTreeView { Name = "tree.resources", Dock = DockStyle.Fill, HideSelection = false };
+            // ---- Tree (layout pattern copied from PrototypeUltimateTool:MainForm.cs, lines 509-526) ----
+            nodeTreeView = new MultiSelectTreeView
+            {
+                Name = "tree.resources",
+                Dock = DockStyle.Fill,
+                BorderStyle = BorderStyle.None,
+                HideSelection = false,
+                FullRowSelect = true,
+                HotTracking = true,
+                ShowNodeToolTips = true,
+                ShowLines = true,
+                ShowRootLines = true,
+                Indent = 18,
+                ItemHeight = 22,
+                Font = new Font("Segoe UI", 9.0f, FontStyle.Regular, GraphicsUnit.Point),
+                ImageList = TreeIcons.Create()
+            };
 
             treeContextMenu = new ContextMenuStrip { Name = "context.resources", Renderer = renderer };
             exportRawSelectedContextItem = new ToolStripMenuItem("Export raw (selected)...") { Name = "context.exportRawSelected" };
@@ -281,8 +358,20 @@ namespace BundleUltimateTool
 
             gameFileTreeView = new MultiSelectTreeView
             {
-                Name = "tree.gameFiles", Dock = DockStyle.Fill,
-                HideSelection = false, Visible = false
+                Name = "tree.gameFiles",
+                Dock = DockStyle.Fill,
+                BorderStyle = BorderStyle.None,
+                HideSelection = false,
+                FullRowSelect = true,
+                HotTracking = true,
+                ShowNodeToolTips = true,
+                ShowLines = true,
+                ShowRootLines = true,
+                Indent = 18,
+                ItemHeight = 22,
+                Font = new Font("Segoe UI", 9.0f, FontStyle.Regular, GraphicsUnit.Point),
+                Visible = false,
+                ImageList = TreeIcons.Create()
             };
             gameFileContextMenu = new ContextMenuStrip { Name = "context.gameFiles", Renderer = renderer };
             openFromFolderItem = new ToolStripMenuItem("Open as archive") { Name = "cmd.file.openFromFolder" };
@@ -330,13 +419,19 @@ namespace BundleUltimateTool
             leftPanel.Controls.Add(noResultsPanel);
 
             // ---- Preview side ----
+            previewScrollPanel = new Panel
+            {
+                Name = "viewer.texture2d.panel", Dock = DockStyle.Fill,
+                AutoScroll = true, BorderStyle = BorderStyle.Fixed3D
+            };
             previewBox = new PictureBox
             {
-                Name = "preview.bundle",
+                Name = "preview.texture2d",
                 Dock = DockStyle.Fill,
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BorderStyle = BorderStyle.Fixed3D
             };
+            previewScrollPanel.Controls.Add(previewBox);
             viewModeToolStrip = new ToolStrip
             {
                 Name = "toolbar.viewMode", Dock = DockStyle.Top,
@@ -348,10 +443,56 @@ namespace BundleUltimateTool
                 Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
                 ToolTipText = UiLocalization.TranslateId("view.mode2d.tooltip", "Texture preview", _uiLanguage)
             };
+            mode3DButton = new ToolStripButton("Model 3D")
+            {
+                Name = "view.mode3d", Checked = false, CheckOnClick = false,
+                Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
+                ToolTipText = UiLocalization.TranslateId("view.mode3d.tooltip", "3D model view", _uiLanguage)
+            };
+            mode2DButton.Click += (s, e) =>
+            {
+                if (_previewTextureSource != null) { SetPreviewMode(false); RefreshTexturePreview(); }
+                else if (model3DView.HasModel) { SetPreviewMode(false); previewMessageLabel.Visible = true; previewMessageLabel.Text = UiLocalization.TranslateId("preview.noTexture", "No texture preview for this entry.", _uiLanguage); }
+            };
+            mode3DButton.Click += (s, e) =>
+            {
+                if (model3DView.HasModel) { SetPreviewMode(true); SetModel3DStatus(); }
+            };
+            // View-mode strip ported from PrototypeUltimateTool/src/MainForm.cs:542-546
+            // (two buttons only: "2D Текстура" / "3D Модель"); existing IDs/localized labels preserved.
             viewModeToolStrip.Items.AddRange(new ToolStripItem[]
             {
-                new ToolStripLabel("Preview") { Name = "view.mode.label" },
-                new ToolStripSeparator(), mode2DButton
+                mode2DButton, mode3DButton
+            });
+
+            // 2D viewer — ported from PrototypeUltimateTool MainForm.cs:548-577.
+            // Prototype item order/IDs/appearance preserved; Bundle extras (V-Flip, Fit/100%) appended.
+            channelToolStrip = new ToolStrip
+            {
+                Name = "toolbar.textureChannels", Dock = DockStyle.Top,
+                GripStyle = ToolStripGripStyle.Hidden, Renderer = renderer, Visible = false
+            };
+            textureModeRgbaButton = new ToolStripButton(UiLocalization.TranslateId("channel.preset.rgba", "RGBA", _uiLanguage), null, (s, e) => SetChannels(true, true, true, true))
+            {
+                Name = "channel.preset.rgba", CheckOnClick = false, Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold)
+            };
+            textureModeRgbButton = new ToolStripButton(UiLocalization.TranslateId("channel.preset.rgb", "RGB", _uiLanguage), null, (s, e) => SetChannels(true, true, true, false))
+            {
+                Name = "channel.preset.rgb", CheckOnClick = false
+            };
+
+            channelRButton = new ToolStripButton("R", null, (s, e) => ApplyChannels()) { Name = "channel.red", CheckOnClick = true, Checked = true, ForeColor = Color.IndianRed, Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) };
+            channelGButton = new ToolStripButton("G", null, (s, e) => ApplyChannels()) { Name = "channel.green", CheckOnClick = true, Checked = true, ForeColor = Color.LightGreen, Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) };
+            channelBButton = new ToolStripButton("B", null, (s, e) => ApplyChannels()) { Name = "channel.blue", CheckOnClick = true, Checked = true, ForeColor = Color.DodgerBlue, Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) };
+            channelAButton = new ToolStripButton("A", null, (s, e) => ApplyChannels()) { Name = "channel.alpha", CheckOnClick = true, Checked = true, ForeColor = Color.LightGray, Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) };
+            resolutionLabel = new ToolStripLabel { Name = "label.textureResolution", Alignment = ToolStripItemAlignment.Right };
+
+            channelToolStrip.Items.AddRange(new ToolStripItem[]
+            {
+                new ToolStripLabel(UiLocalization.TranslateId("label.preset", "Preset:", _uiLanguage)) { Name = "label.preset" }, textureModeRgbaButton, textureModeRgbButton,
+                new ToolStripSeparator(),
+                new ToolStripLabel(UiLocalization.TranslateId("label.channels", "Channels:", _uiLanguage)) { Name = "label.channels" }, channelRButton, channelGButton, channelBButton, channelAButton,
+                new ToolStripSeparator(), resolutionLabel
             });
 
             filePreviewTextBox = new TextBox
@@ -361,10 +502,18 @@ namespace BundleUltimateTool
                 BorderStyle = BorderStyle.Fixed3D,
                 Font = new Font("Consolas", 9F), Visible = false
             };
+            model3DView = new Model3DView();
             var topViewPanel = new Panel { Dock = DockStyle.Fill };
-            topViewPanel.Controls.Add(previewBox);
+            var previewToolbars = new Panel { Dock = DockStyle.Top, AutoSize = true };
+            previewToolbars.Controls.Add(channelToolStrip);
+            previewToolbars.Controls.Add(viewModeToolStrip);
+            // Dock.Top order: lower index = front = docked last. We want viewModeToolStrip on top.
+            previewToolbars.Controls.SetChildIndex(viewModeToolStrip, 1);
+            previewToolbars.Controls.SetChildIndex(channelToolStrip, 0);
+            topViewPanel.Controls.Add(previewScrollPanel);
             topViewPanel.Controls.Add(filePreviewTextBox);
-            topViewPanel.Controls.Add(viewModeToolStrip);
+            topViewPanel.Controls.Add(model3DView);
+            topViewPanel.Controls.Add(previewToolbars);
             previewMessageLabel = new Label
             {
                 Name = "preview.message", Dock = DockStyle.Fill,
@@ -372,11 +521,14 @@ namespace BundleUltimateTool
                 Padding = new Padding(8), Visible = false
             };
             topViewPanel.Controls.Add(previewMessageLabel);
+            // In WinForms index 0 is frontmost; the hint must sit above the PictureBox.
+            previewMessageLabel.BringToFront();
+            filePreviewTextBox.BringToFront();
+            previewMessageLabel.BringToFront();
 
-            propGrid = new PropertyGrid
+            propGrid = new ThemedPropertyGrid
             {
-                Name = "properties.resource", Dock = DockStyle.Fill,
-                HelpVisible = false, ToolbarVisible = false
+                Name = "properties.resource", Dock = DockStyle.Fill
             };
             var propertyBodyPanel = new Panel { Dock = DockStyle.Fill };
             propertyBodyPanel.Controls.Add(propGrid);
@@ -407,7 +559,7 @@ namespace BundleUltimateTool
             rightSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill, Orientation = Orientation.Horizontal,
-                SplitterDistance = 420, SplitterWidth = 5
+                SplitterDistance = 480, SplitterWidth = 5
             };
             rightSplit.Panel1.Controls.Add(topViewPanel);
             rightSplit.Panel2.Controls.Add(propertyPanel);
@@ -417,7 +569,7 @@ namespace BundleUltimateTool
             mainSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill, Orientation = Orientation.Vertical,
-                SplitterWidth = 5
+                SplitterDistance = 380, SplitterWidth = 5, FixedPanel = FixedPanel.Panel1
             };
             mainSplit.Panel1.Controls.Add(leftPanel);
             mainSplit.Panel2.Controls.Add(rightSplit);
@@ -458,6 +610,7 @@ namespace BundleUltimateTool
             statusStrip.TabIndex = 10;
 
             InitializeWorkspaceStates(topViewPanel, propertyBodyPanel);
+            WireNativeTheme(this);
 
             DragEnter += (s, e) =>
             {
@@ -477,10 +630,12 @@ namespace BundleUltimateTool
             EditorCommandChrome.Apply(mainToolStrip, true);
             EditorCommandChrome.Apply(filterToolStrip, false);
             EditorCommandChrome.Apply(viewModeToolStrip, false);
+            EditorCommandChrome.Apply(channelToolStrip, false);
             EditorCommandChrome.Apply(treeContextMenu, false);
             DpiChanged += (s, e) =>
             {
                 EditorCommandChrome.Apply(menuStrip, false);
+                EditorCommandChrome.Apply(channelToolStrip, false);
                 EditorCommandChrome.Apply(treeContextMenu, false);
             };
         }
