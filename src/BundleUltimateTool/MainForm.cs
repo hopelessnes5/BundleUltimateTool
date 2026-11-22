@@ -68,6 +68,7 @@ namespace BundleUltimateTool
         private ToolStripStatusLabel statusPathLabel;
         private ToolStripProgressBar statusProgress;
         private TableLayoutPanel noResultsPanel;
+        private TableLayoutPanel noResultsContent;
         private Label noResultsLabel;
         private Button clearFilterButton;
 
@@ -109,6 +110,27 @@ namespace BundleUltimateTool
 
             if (!string.IsNullOrWhiteSpace(startupFile)) OpenBundle(startupFile);
             else if (!_filesMode) SetStatus(UiLocalization.TranslateId("status.ready", "Ready", _uiLanguage));
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            // SplitterDistance set in the initializer is clamped before layout; apply the
+            // one-third split once the actual client size is known. Never reset it later
+            // so a user-dragged divider is preserved.
+            if (mainSplit != null)
+            {
+                const int leftMinimum = 300;
+                const int rightMinimum = 520;
+                int maximum = Math.Max(leftMinimum, ClientSize.Width - rightMinimum);
+                int desired = Math.Clamp(ClientSize.Width / 3, leftMinimum, maximum);
+                // Set a valid distance before the min sizes, otherwise each min-size
+                // setter validates against the old (too small) default distance and throws.
+                mainSplit.SplitterDistance = desired;
+                mainSplit.Panel1MinSize = leftMinimum;
+                mainSplit.Panel2MinSize = rightMinimum;
+            }
+            ApplyTheme();
         }
 
         private void InitializeComponentShell()
@@ -199,12 +221,12 @@ namespace BundleUltimateTool
 
             // ---- Dense resource filter row ----
             filterToolStrip = new ToolStrip { Name = "toolbar.resourceBrowser", GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top, Renderer = renderer };
-            searchTextBox = new ToolStripTextBox { Name = "input.search", Size = new Size(100, 25) };
+            searchTextBox = new ToolStripTextBox { Name = "input.search", Size = new Size(76, 23) };
             typeFilterComboBox = new ToolStripComboBox
             {
                 Name = "input.type",
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Size = new Size(120, 25),
+                Size = new Size(96, 23),
                 Enabled = false
             };
             archiveModeButton = new ToolStripButton("Archive")
@@ -282,7 +304,7 @@ namespace BundleUltimateTool
             noResultsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             noResultsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             noResultsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            var noResultsContent = new TableLayoutPanel
+            noResultsContent = new TableLayoutPanel
             {
                 AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Anchor = AnchorStyles.None, ColumnCount = 1, RowCount = 2,
@@ -390,10 +412,12 @@ namespace BundleUltimateTool
             rightSplit.Panel1.Controls.Add(topViewPanel);
             rightSplit.Panel2.Controls.Add(propertyPanel);
 
+            // Min sizes and SplitterDistance are applied in OnLoad, when the real client
+            // width exists. Setting them here throws because the control is still tiny.
             mainSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill, Orientation = Orientation.Vertical,
-                SplitterDistance = 380, SplitterWidth = 5, FixedPanel = FixedPanel.Panel1
+                SplitterWidth = 5
             };
             mainSplit.Panel1.Controls.Add(leftPanel);
             mainSplit.Panel2.Controls.Add(rightSplit);
