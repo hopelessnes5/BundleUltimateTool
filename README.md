@@ -2,44 +2,67 @@
 
 ## Обзор
 
-BundleUltimateTool — Windows-утилита для просмотра, извлечения и сборки архивов
-`Need for Speed: Hot Pursuit (2010)` / `Burnout Paradise` (`.bundle`, `.bndl`, `.bin`).
-Это новое приложение: оболочка и визуальный стиль перенесены из
-**PrototypeUltimateTool**, а логика формата — порт **nfs-bundle-explorer**
-(оригинал: iOrange, 2010; модернизация 2026 — @hopelessnes5 и Gemini).
+Windows-утилита для полного цикла работы с архивами `Need for Speed: Hot Pursuit (2010)`
+и `Burnout Paradise`: `.bundle`, `.bndl`, `.bin`. Приложение объединяет:
 
-Приложение работает в одном основном окне редактора: дерево записей, сетка свойств,
-2D-предпросмотр текстур, строка состояния, светлая/тёмная темы и каталоги RU/EN.
-Единственный дополнительный диалог — компактный сборщик архивов.
+- **оболочку и визуальные решения PrototypeUltimateTool** (компактное одно окно, дерево,
+  PropertyGrid, 2D/3D-предпросмотр, тёмная/светлая темы, RU/EN);
+- **логику формата nfs-bundle-explorer**
+- **DX12-рендерер и систему индексации PrototypeUltimateTool**, адаптированные под NFS-архивы.
+
+Всё работает в одном основном окне. Единственный дополнительный диалог — компактный
+сборщик архивов.
 
 ## Возможности
 
-- Открытие архива (меню `Файл → Открыть`, `Ctrl+O` или перетаскивание файла в окно).
-- Плоский список записей в дереве с поиском по тексту и фильтром по типу файла.
-- Сетка свойств: тип, хеш, link ID, размеры (сырые и с маской), абсолютные смещения,
-  CRC32 сжатых заголовка/тела, параметры текстур и моделей.
-- Извлечение RAW `.nfs` (сжатый заголовок + тело после zlib) для одной или всех записей.
-- Текстуры: предпросмотр, экспорт `.dds` и преобразование `.dds → .nfs`.
-- Модели: экспорт геометрии в Wavefront `.obj` (глобальные 1-based индексы).
-- STRINGS: сохранение таблицы строк в UTF-8 `.txt` (одна строка на линию).
-- DEFS: компактная таблица в панели свойств (Field ID, Offset, Type).
-- Сборщик архивов: замена записей по `.nfs`-файлам `file_0000.nfs`, запись во
-  временный файл с последующей атомарной заменой цели (исправлен баг оригинала,
-  который оставлял `.temp` и никогда не переименовывал результат).
-- Выбор папки с игрой (`Файл → Выбрать папку игры`) и обзор всех файлов прямо в
-  приложении: два режима дерева (`Архив` / `Файлы`), ленивая загрузка каталогов,
-  breadcrumb, кнопка «Наверх», поиск и фильтр по расширению, `Ctrl`/`Shift`-выделение,
-  копирование полных путей. Двойной щелчок по `.bundle`/`.bndl`/`.bin` открывает архив.
-- Предпросмотр любого файла: текстовые файлы — текстом (UTF-8/Res fallback, до 256 КБ),
-  остальные — HEX-дампом (16 байт в строке + ASCII); для `.dds` показывается HEX
-  с пояснением, декодированный предпросмотр текстур доступен в режиме архива.
+### Архивы и навигация
+
+- Открытие архива: `Файл → Открыть`, `Ctrl+O`, перетаскивание файла в окно или аргумент
+  командной строки.
+- Выбор папки с игрой (`Файл → Выбрать папку игры`). При выборе папки приложение
+  **само индексирует и открывает все найденные архивы** — двойной щелчок не нужен.
+- Дерево показывает папки и архивы; записи внутри архива подгружаются лениво при раскрытии,
+  один щелчок по `+` раскрывает, следующий сворачивает.
+- Индексация по образцу Prototype: читаются только 48-байтовые заголовки архивов,
+  строится компактный **type-histogram** (тип → количество) и кэшируется в бинарный
+  sidecar со строгой проверкой identity (путь/размер/mtime), budgets и атомарной записью.
+- Фильтр `Тип` строится по реальным форматам внутри архивов; в выпадающем списке видны
+  `texture (1)`, `material (2)`, `model (5)`, `defs table (18)`, а также имена,
+  определённые по структуре неизвестных типов (`D3D9 shader`, `challenge XML`,
+  `name table`, `vehicle stats`, `hardpoints`, `cam spline`, `float4 array`, …).
+- Восемь режимов сортировки из Prototype: по умолчанию, по имени ↑/↓, по размеру ↑/↓,
+  по разрешению ↑/↓, по типу.
+
+### Извлечение и конвертация
+
+- Извлечение RAW `.nfs` (декомпрессированные заголовок + тело) для выбранных или всех записей.
+- Текстуры: 2D-предпросмотр, экспорт `.dds`, конвертация `.dds → .nfs`.
+- Модели: экспорт в Wavefront `.obj` (глобальные 1-based индексы); регрессионный тест
+  экспортирует все 44 модели эталонного архива.
+- STRINGS: сохранение таблицы строк в UTF-8 `.txt`; DEFS: таблица в панели свойств.
+- Сборщик архивов: замена записей из `.nfs`, запись во временный файл с атомарной заменой
+  цели (исправлен баг оригинала, оставлявший `.temp`).
+
+### Просмотр
+
+- **2D-вьювер** — панель Prototype: преsets `RGBA` / `RGB`, каналы `R G B A`, подпись
+  разрешения справа. Обработка каналов — порт `DdsDecoder.ProcessChannels`.
+- **3D-вьювер** — компактный DX12-рендерер Prototype (Vortice 3.8.3): орбитальная камера,
+  gizmo, оверлей статистики FPS/CPU/GPU/draw calls, режимы каркас/сплошной/normals.
+  Шейдер `Dx12Wireframe.hlsl` встроен в сборку.
+- PropertyGrid показывает тип, хеш, link ID, размеры (сырые и с маской), абсолютные
+  смещения, CRC32 сжатых данных, параметры текстур и моделей.
+- В режиме «Файлы» любой файл можно посмотреть: текстовые — текстом (UTF-8 с fallback),
+  остальные — HEX + ASCII (16 байт в строке).
 
 ## Стек и требования
 
-- C# 13, .NET 9 (`net9.0-windows`), WinForms. **WPF и DX12 не используются.**
-- Windows x64, .NET 9 Windows Desktop Runtime (устанавливается отдельно).
-- Поставка — framework-dependent single-file EXE: один `.exe` плюс внешние каталоги
-  `Languages/`; self-contained не требуется.
+- C# 13, .NET 9 (`net9.0-windows`), WinForms, Direct3D 12 через Vortice 3.8.3. **WPF не используется.**
+- Windows x64, **.NET 9 Windows Desktop Runtime** (устанавливается отдельно).
+- Поставка — framework-dependent single-file EXE: один `.exe` плюс внешняя папка `Languages/`.
+  Self-contained сборка не используется.
+- Данные приложения: `settings.ini` рядом с EXE; логи — `%LOCALAPPDATA%\BundleUltimateTool\Logs`;
+  кэш индекса — `%LOCALAPPDATA%\BundleUltimateTool\IndexCache` и `…\Cache`.
 
 ## Сборка, тесты, запуск
 
@@ -49,115 +72,69 @@ dotnet run --project tests/BundleChecks/BundleChecks.csproj -c Release
 .\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe
 ```
 
-Архив или папку игры можно передать аргументом командной строки (в том числе из Проводника):
+Аргументы командной строки:
 
 ```powershell
-.\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe "F:\path\to\file.bundle"
-.\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe --game-folder "F:\Games\NFS HP"
+... BundleUltimateTool.exe "F:\path\to\file.bundle"
+... BundleUltimateTool.exe --game-folder "F:\Games\NFS HP"
+... BundleUltimateTool.exe "F:\path\to\file.bundle" --select-entry 0   # отладочный выбор записи
 ```
 
-Проверки используют эталонные файлы из `F:\repos\nfs-bundle-explorer\src\test`
-(бинарные файлы не копируются в репозиторий). Настройки сохраняются в `settings.ini`
-рядом с исполняемым файлом, журнал — в `%LOCALAPPDATA%\BundleUltimateTool\Logs`.
+Проверки читают эталонные файлы из `F:\repos\nfs-bundle-explorer\src\test`
+(бинарники в репозиторий не копируются). Сейчас **337 проверок**, включая побайтовую
+пересборку архивов, OBJ-экспорт всех моделей, кэш и incident-тесты битых таблиц.
 
 ## Поддерживаемые типы и ограничения
 
-- Поддерживаемые типы записей: текстуры (DXT1, DXT5, RGBA32), модели (mesh type 5),
-  таблицы STRINGS (513) и DEFS (18); остальные типы остаются доступны как RAW-записи.
-- 3D-вьюпорт отсутствует: предпросмотр только 2D.
-- DXT3 не декодируется (в NFS-архивах не встречается); неподдерживаемый FourCC
-  отклоняется с понятной ошибкой.
-- Новые zlib-потоки корректны, но не побайтово совпадают с потоками старой версии zlib
-  (например, 4885 B против 4448 B); это зафиксировано в тестах и не влияет на данные.
-- STRINGS-таблицы нет в эталонных архивах, поэтому её разбор покрыт синтетическим тестом.
-- Пересборка поверх исходного файла допускается только после явного подтверждения.
-- Папка игры выбирается вручную (диалог или `--game-folder`); автоопределения установленных игр нет.
-- Скрытые и системные записи (например `.svn`) показываются как обычные папки.
-
-## Благодарности
-
-iOrange (оригинальный nfs-bundle-explorer, 2010); @hopelessnes5 и Gemini (модернизация
-2026); команда PrototypeUltimateTool — за оболочку редактора и визуальные решения.
-
----
+- Полностью поддерживаются: текстуры (DXT1, DXT5, RGBA32), модели (тип 5),
+  STRINGS (513), DEFS (18), RAW-извлечение любых записей.
+- Для неизвестных типов (~50 значений) определены и присвоены имена по структуре файлов, но
+  **декодеры для большинства из них не реализованы** — они доступны как RAW и по имени
+  в фильтре. DXT3 не декодируется (в NFS-архивах не встречается).
+- 3D-вьювер работает в Solid/Wireframe/Normals; текстурированный pipeline подготовлен,
+  но не привязан к текстурам архива — модели отображаются без текстур.
+- Новые zlib-потоки корректны, но не побайтово совпадают со старой версией zlib
+  (например, 4885 B против 4448 B); сборка без замен побайтово идентична оригиналу.
+- STRINGS-таблицы нет в эталонных архивах — её разбор покрыт синтетическим тестом.
+- Папка игры выбирается вручную; автоопределения установленных игр нет. Скрытые записи
+  (`.svn`) показываются как обычные папки. Пересборка поверх исходника требует подтверждения.
 
 ## Overview
 
-BundleUltimateTool is a Windows utility for browsing, extracting and rebuilding archives
-of `Need for Speed: Hot Pursuit (2010)` / `Burnout Paradise` (`.bundle`, `.bndl`, `.bin`).
-This is a new application: the UI shell and visual style are inherited from
-**PrototypeUltimateTool**, while the file-format logic is a managed port of
-**nfs-bundle-explorer** (original by iOrange, 2010; modernization 2026 by @hopelessnes5
-and Gemini).
+A Windows utility for the full cycle of working with `Need for Speed: Hot Pursuit (2010)`
+and `Burnout Paradise` archives (`.bundle`, `.bndl`, `.bin`). It combines the compact
+single-window shell and viewer patterns of **PrototypeUltimateTool** with a managed C#
+port of the **nfs-bundle-explorer** format logic. 
+A DX12 renderer and Prototype-style indexing are adapted for NFS bundles.
 
-The editor stays in one main window: entry tree, property grid, 2D texture preview and
-status bar, with light/dark themes and RU/EN catalogs. The only additional dialog is the
-compact bundle assembler.
+### Features
 
-## Features
+- Open a bundle via `File → Open`, `Ctrl+O`, drag-and-drop, or command line.
+- Select a game folder: **all bundles are discovered and opened automatically**, with
+  header-only indexing, a compact type histogram and a binary sidecar cache using strict
+  identity checks. A single click on `+` expands a bundle, the next collapses it.
+- Type filter built from actual archive contents; eight sorting modes ported from Prototype.
+- Raw `.nfs` extraction, DDS export/conversion, OBJ export, STRINGS→TXT, DEFS table view,
+  and an archive assembler with atomic replacement.
+- Prototype-style 2D preview (`RGBA`/`RGB` presets, R/G/B/A channels, resolution label)
+  and a compact DX12 3D viewer with orbit camera, gizmo and stats overlay.
+- Property grid with hashes, sizes, offsets, CRC32 and texture/model metadata.
 
-- Open an archive via `File → Open`, `Ctrl+O`, or by dropping a file onto the window.
-- Flat entry tree with text search and file-type filter.
-- Property grid: type, hash, link ID, raw and masked sizes, absolute offsets, CRC32 of
-  compressed header/body, plus texture and model metadata when applicable.
-- Raw `.nfs` extraction (compressed header + body after zlib) for selected or all entries.
-- Textures: preview, DDS export and DDS→NFS conversion.
-- Models: geometry export to Wavefront `.obj` with global 1-based indices.
-- STRINGS: save the string table as UTF-8 `.txt`, one string per line.
-- DEFS: compact table inside the property panel (Field ID, Offset, Type).
-- Bundle assembler: replace entries from `file_0000.nfs`-style files; writes to a unique
-  temp file and atomically replaces the target (fixing the original `.temp` bug).
-- Game folder selection (`File → Select game folder...`) and an in-app browser for ALL
-  files: two tree modes (Archive / Files), lazy directory loading, breadcrumb, Up button,
-  name search and extension filter, Ctrl/Shift multi-select, copy full paths. Double-click
-  a `.bundle`/`.bndl`/`.bin` file to open it as an archive.
-- Preview for any file: text files as text (UTF-8 with Latin-1 fallback, 256 KB cap),
-  others as a 16-byte-per-row hex + ASCII dump; `.dds` is shown as hex with a note, while
-  decoded texture preview remains available in archive mode.
+### Stack / limitations
 
-## Stack and requirements
+C# 13, .NET 9, WinForms, Direct3D 12 via Vortice 3.8.3 (no WPF). Requires the .NET 9
+Windows Desktop Runtime; shipped as a framework-dependent single-file EXE. Most non-core
+file types are identified and named but not decoded (raw extraction only). 3D models are
+shown untextured; new zlib streams are valid but not byte-identical to legacy output.
+Game-folder discovery is manual.
 
-- C# 13, .NET 9 (`net9.0-windows`), WinForms. **No WPF, no Direct3D 12.**
-- Windows x64 with the .NET 9 Windows Desktop Runtime installed separately.
-- Framework-dependent single-file EXE: one `.exe` plus external `Languages/` catalogs.
-
-## Build, test, run
+### Build / test / run
 
 ```powershell
 dotnet build BundleUltimateTool.sln -c Release
 dotnet run --project tests/BundleChecks/BundleChecks.csproj -c Release
-.\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe
-```
-
-A bundle or a game folder may also be passed as a command-line argument (including from
-Windows Explorer):
-
-```powershell
-.\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe "F:\path\to\file.bundle"
 .\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe --game-folder "F:\Games\NFS HP"
 ```
 
-Fixture checks read the reference files from `F:\repos\nfs-bundle-explorer\src\test`
-(no binaries are copied into this repository). Settings live in `settings.ini` next to the
-executable; logs go to `%LOCALAPPDATA%\BundleUltimateTool\Logs`.
-
-## Supported types and known limitations
-
-- Supported entry types: textures (DXT1, DXT5, RGBA32), models (mesh type 5), STRINGS
-  (513) and DEFS (18); all other types remain available as raw entries.
-- There is no 3D viewport — preview is 2D only.
-- DXT3 is not decoded (it does not occur in these NFS archives); unsupported FourCC
-  values are rejected with a clear error.
-- Newly compressed zlib streams are valid but not byte-identical to legacy zlib output
-  (e.g. 4885 B vs 4448 B); the difference is recorded by the checks and does not change data.
-- No STRINGS table exists in the bundled fixtures, so its parser is covered by a
-  synthetic test.
-- Rebuilding in place requires explicit user confirmation.
-- The game folder is chosen manually (dialog or `--game-folder`); installed games are not
-  auto-detected.
-- Hidden/system entries (for example `.svn`) are shown like regular folders.
-
-## Credits
-
-iOrange (original nfs-bundle-explorer, 2010); @hopelessnes5 and Gemini (2026
-modernization); the PrototypeUltimateTool team for the editor shell and visual patterns.
+337 checks pass, including byte-identical rebuilds, 44-model OBJ regression, cache
+identity tests and corrupt-table cases.
