@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>false</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>13.0</LangVersion>
+    <RootNamespace>BundleUltimateTool</RootNamespace>
+    <AssemblyName>BundleUltimateTool</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="Languages\*.xml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BundleFormat\BundleFormat.csproj" />
+  </ItemGroup>
+
+  <!-- Framework-dependent single-file EXE after a normal Build. The .NET 9 Windows
+       Desktop Runtime is installed separately; language catalogs stay external. -->
+  <Target Name="PublishSingleFileAfterBuild"
+          AfterTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'
+                  and '$(BuildSingleFileInner)' != 'true'
+                  and '$(PublishSingleFile)' != 'true'
+                  and '$(IsCrossTargetingBuild)' != 'true'">
+    <Message Importance="high" Text="Publishing framework-dependent single-file EXE (requires .NET 9 Windows Desktop Runtime) into $(TargetDir)..." />
+
+    <MSBuild Projects="$(MSBuildProjectFullPath)"
+             Targets="Publish"
+             BuildInParallel="false"
+             Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework);RuntimeIdentifier=win-x64;SelfContained=false;PublishSingleFile=true;IncludeNativeLibrariesForSelfExtract=true;IncludeAllContentForSelfExtract=false;IncludeSymbolsInSingleFile=false;EnableCompressionInSingleFile=false;PublishTrimmed=false;PublishReadyToRun=false;AppendRuntimeIdentifierToOutputPath=false;BuildSingleFileInner=true;PublishDir=$(TargetDir)" />
+
+    <ItemGroup>
+      <_SingleFileLooseOutput Include="$(TargetDir)*.dll" />
+      <_SingleFileLooseOutput Include="$(TargetDir)*.deps.json" />
+      <_SingleFileLooseOutput Include="$(TargetDir)*.runtimeconfig.json" />
+      <_SingleFileLooseOutput Include="$(TargetDir)*.pdb" />
+    </ItemGroup>
+    <Delete Files="@(_SingleFileLooseOutput)" />
+    <RemoveDir Directories="$(TargetDir)win-x64" Condition="Exists('$(TargetDir)win-x64')" />
+    <RemoveDir Directories="$(TargetDir)runtimes" Condition="Exists('$(TargetDir)runtimes')" />
+  </Target>
+</Project>

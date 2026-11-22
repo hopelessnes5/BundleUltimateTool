@@ -1,0 +1,5 @@
+F:\repos\BundleUltimateTool\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.pdb
+F:\repos\BundleUltimateTool\src\BundleUltimateTool\bin\Release\net9.0-windows\Languages\en.xml
+F:\repos\BundleUltimateTool\src\BundleUltimateTool\bin\Release\net9.0-windows\Languages\ru.xml
+F:\repos\BundleUltimateTool\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleFormat.pdb
+F:\repos\BundleUltimateTool\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe

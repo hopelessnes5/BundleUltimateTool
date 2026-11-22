@@ -1,0 +1,11 @@
+F:\repos\BundleUltimateTool\src\BundleFormat\bin\Release\net9.0\BundleFormat.deps.json
+F:\repos\BundleUltimateTool\src\BundleFormat\bin\Release\net9.0\BundleFormat.dll
+F:\repos\BundleUltimateTool\src\BundleFormat\bin\Release\net9.0\BundleFormat.pdb
+F:\repos\BundleUltimateTool\src\BundleFormat\obj\Release\net9.0\BundleFormat.GeneratedMSBuildEditorConfig.editorconfig
+F:\repos\BundleUltimateTool\src\BundleFormat\obj\Release\net9.0\BundleFormat.AssemblyInfoInputs.cache
+F:\repos\BundleUltimateTool\src\BundleFormat\obj\Release\net9.0\BundleFormat.AssemblyInfo.cs
+F:\repos\BundleUltimateTool\src\BundleFormat\obj\Release\net9.0\BundleFormat.csproj.CoreCompileInputs.cache
+F:\repos\BundleUltimateTool\src\BundleFormat\obj\Release\net9.0\BundleFormat.dll
+F:\repos\BundleUltimateTool\src\BundleFormat\obj\Release\net9.0\refint\BundleFormat.dll
+F:\repos\BundleUltimateTool\src\BundleFormat\obj\Release\net9.0\BundleFormat.pdb
+F:\repos\BundleUltimateTool\src\BundleFormat\obj\Release\net9.0\ref\BundleFormat.dll

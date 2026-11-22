@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "nxh3x6YRkhc=",
+  "success": true,
+  "projectFilePath": "F:\\repos\\BundleUltimateTool\\src\\BundleUltimateTool\\BundleUltimateTool.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\test drive\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\9.0.20\\microsoft.netcore.app.runtime.win-x64.9.0.20.nupkg.sha512",
+    "C:\\Users\\test drive\\.nuget\\packages\\microsoft.windowsdesktop.app.runtime.win-x64\\9.0.20\\microsoft.windowsdesktop.app.runtime.win-x64.9.0.20.nupkg.sha512",
+    "C:\\Users\\test drive\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\9.0.20\\microsoft.aspnetcore.app.runtime.win-x64.9.0.20.nupkg.sha512"
+  ],
+  "logs": []
+}
