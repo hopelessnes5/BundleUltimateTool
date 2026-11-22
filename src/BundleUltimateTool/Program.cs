@@ -41,10 +41,25 @@ namespace BundleUltimateTool
                     ? commandLineArgs.Skip(1).ToArray()
                     : (args ?? Array.Empty<string>());
 
+                string gameFolder = null;
+                var fileArgs = new System.Collections.Generic.List<string>();
+                for (int i = 0; i < effectiveArgs.Length; i++)
+                {
+                    if (string.Equals(effectiveArgs[i], "--game-folder", StringComparison.OrdinalIgnoreCase) &&
+                        i + 1 < effectiveArgs.Length)
+                    {
+                        gameFolder = effectiveArgs[i + 1];
+                        i++;
+                    }
+                    else fileArgs.Add(effectiveArgs[i]);
+                }
+                effectiveArgs = fileArgs.ToArray();
+
                 string startupFile = ResolveStartupFile(effectiveArgs);
                 ApplicationLog.Write("STARTUP_ARGUMENTS",
                     "Args=" + string.Join(" | ", effectiveArgs) +
-                    "; ResolvedFile=" + (startupFile ?? "<none>"));
+                    "; ResolvedFile=" + (startupFile ?? "<none>") +
+                    "; GameFolder=" + (gameFolder ?? "<none>"));
 
                 if (effectiveArgs.Length > 0 && string.IsNullOrEmpty(startupFile))
                 {
@@ -55,7 +70,7 @@ namespace BundleUltimateTool
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
 
-                Application.Run(new MainForm(startupFile));
+                Application.Run(new MainForm(startupFile, gameFolder));
                 ApplicationLog.Write("SHUTDOWN", "Application main loop exited normally.");
             }
             catch (Exception ex)

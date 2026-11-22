@@ -38,6 +38,7 @@ namespace BundleUltimateTool
                     defsGrid.Columns[2].HeaderText = UiLocalization.TranslateId("defs.col.type", "Type", _uiLanguage);
                 }
                 UpdateBundleStatus();
+                if (_filesMode) UpdateGameStatus();
             }
             finally { _applyingUiLocalization = false; }
         }

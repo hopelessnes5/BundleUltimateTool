@@ -14,7 +14,7 @@ namespace BundleUltimateTool
     public partial class MainForm : Form
     {
         private MenuStrip menuStrip;
-        private ToolStripMenuItem fileMenuItem, openMenuItem, exitMenuItem;
+        private ToolStripMenuItem fileMenuItem, openMenuItem, exitMenuItem, selectGameFolderMenuItem;
         private ToolStripMenuItem exportRawSelectedMenuItem, exportRawAllMenuItem;
         private ToolStripMenuItem exportTextureSelectedMenuItem, exportTextureAllMenuItem;
         private ToolStripMenuItem ddsToNfsMenuItem;
@@ -43,19 +43,33 @@ namespace BundleUltimateTool
         private ToolStrip filterToolStrip;
         private ToolStripTextBox searchTextBox;
         private ToolStripComboBox typeFilterComboBox;
+        private ToolStripButton archiveModeButton;
+        private ToolStripButton filesModeButton;
+        private ToolStripButton selectGameFolderButton;
+        private ToolStripButton folderUpButton;
+        private ToolStripLabel breadcrumbLabel;
 
         private SplitContainer mainSplit;
         private SplitContainer rightSplit;
         private MultiSelectTreeView nodeTreeView;
+        private MultiSelectTreeView gameFileTreeView;
+        private ContextMenuStrip gameFileContextMenu;
+        private ToolStripMenuItem openFromFolderItem;
+        private ToolStripMenuItem copyPathItem;
 
         private ToolStrip viewModeToolStrip;
         private ToolStripButton mode2DButton;
         private PictureBox previewBox;
+        private TextBox filePreviewTextBox;
         private PropertyGrid propGrid;
 
         private StatusStrip statusStrip;
         private ToolStripStatusLabel statusStateLabel;
         private ToolStripStatusLabel statusPathLabel;
+        private ToolStripProgressBar statusProgress;
+        private TableLayoutPanel noResultsPanel;
+        private Label noResultsLabel;
+        private Button clearFilterButton;
 
         private EditorDocumentCommands _commands;
         private readonly EditorSettingsStore _settingsStore = new();
@@ -65,9 +79,12 @@ namespace BundleUltimateTool
         private string _uiLanguage = "en";
         private bool _applyingUiLocalization;
         private string _currentFilePath;
+        private string _gameFolderPath;
         private BundleDocument _document;
+        private readonly GameFolderModel _gameFolderModel = new();
+        private bool _filesMode;
 
-        public MainForm(string startupFile = null)
+        public MainForm(string startupFile = null, string gameFolderPath = null)
         {
             Name = "app.main";
             Text = "Bundle Ultimate Tool";
@@ -87,8 +104,11 @@ namespace BundleUltimateTool
             ApplyLocalizationToUi();
             UpdateWorkspaceState();
 
+            if (!string.IsNullOrWhiteSpace(gameFolderPath)) ApplyGameFolder(gameFolderPath, switchToFileMode: true);
+            else if (!string.IsNullOrWhiteSpace(_gameFolderPath)) ApplyGameFolder(_gameFolderPath, switchToFileMode: false);
+
             if (!string.IsNullOrWhiteSpace(startupFile)) OpenBundle(startupFile);
-            else SetStatus(UiLocalization.TranslateId("status.ready", "Ready", _uiLanguage));
+            else if (!_filesMode) SetStatus(UiLocalization.TranslateId("status.ready", "Ready", _uiLanguage));
         }
 
         private void InitializeComponentShell()
@@ -100,6 +120,7 @@ namespace BundleUltimateTool
 
             fileMenuItem = new ToolStripMenuItem("File") { Name = "menu/file" };
             openMenuItem = new ToolStripMenuItem("Open...") { Name = "menu/file/open", ShortcutKeys = Keys.Control | Keys.O };
+            selectGameFolderMenuItem = new ToolStripMenuItem("Select game folder...") { Name = "cmd.file.selectGameFolder" };
             exitMenuItem = new ToolStripMenuItem("Exit") { Name = "menu/file/exit" };
             exportRawSelectedMenuItem = new ToolStripMenuItem("Export raw (selected)...") { Name = "cmd.file.exportRawSelected" };
             exportRawAllMenuItem = new ToolStripMenuItem("Export raw (all)...") { Name = "cmd.file.exportRawAll" };
@@ -109,7 +130,7 @@ namespace BundleUltimateTool
             exportObjAllMenuItem = new ToolStripMenuItem("Export OBJ (all)...") { Name = "cmd.file.exportObjAll" };
             fileMenuItem.DropDownItems.AddRange(new ToolStripItem[]
             {
-                openMenuItem, new ToolStripSeparator(),
+                openMenuItem, selectGameFolderMenuItem, new ToolStripSeparator(),
                 exportRawSelectedMenuItem, exportRawAllMenuItem,
                 new ToolStripSeparator(),
                 exportTextureSelectedMenuItem, exportTextureAllMenuItem,
@@ -143,9 +164,38 @@ namespace BundleUltimateTool
 
             // ---- Quick-access toolbar ----
             mainToolStrip = new ToolStrip { Name = "toolbar.quickAccess", GripStyle = ToolStripGripStyle.Hidden, Renderer = renderer };
-            openButton = new ToolStripButton("Open") { Name = "cmd.file.open", DisplayStyle = ToolStripItemDisplayStyle.ImageAndText };
-            exportRawButton = new ToolStripButton("Export raw") { Name = "cmd.file.exportRawSelected", DisplayStyle = ToolStripItemDisplayStyle.ImageAndText };
-            mainToolStrip.Items.AddRange(new ToolStripItem[] { openButton, new ToolStripSeparator(), exportRawButton });
+            openButton = new ToolStripButton("Open")
+            {
+                Name = "cmd.file.open", DisplayStyle = ToolStripItemDisplayStyle.ImageAndText,
+                ToolTipText = UiLocalization.TranslateId("cmd.file.open.tooltip", "Open a bundle (Ctrl+O)", _uiLanguage)
+            };
+            exportRawButton = new ToolStripButton("Export raw")
+            {
+                Name = "cmd.file.exportRawSelected", DisplayStyle = ToolStripItemDisplayStyle.ImageAndText,
+                ToolTipText = UiLocalization.TranslateId("cmd.file.exportRawSelected.tooltip",
+                    "Extract raw .nfs for selected entries", _uiLanguage)
+            };
+            selectGameFolderButton = new ToolStripButton("Game folder")
+            {
+                Name = "cmd.file.selectGameFolder", DisplayStyle = ToolStripItemDisplayStyle.ImageAndText,
+                ToolTipText = UiLocalization.TranslateId("cmd.file.selectGameFolder.tooltip",
+                    "Select the game installation folder", _uiLanguage)
+            };
+            folderUpButton = new ToolStripButton("Up")
+            {
+                Name = "cmd.folder.up", DisplayStyle = ToolStripItemDisplayStyle.Image,
+                Enabled = false,
+                ToolTipText = UiLocalization.TranslateId("cmd.folder.up.tooltip", "Go up one folder", _uiLanguage)
+            };
+            breadcrumbLabel = new ToolStripLabel(string.Empty)
+            {
+                Name = "folder.breadcrumb", Visible = false, Overflow = ToolStripItemOverflow.Never
+            };
+            mainToolStrip.Items.AddRange(new ToolStripItem[]
+            {
+                openButton, selectGameFolderButton, new ToolStripSeparator(),
+                folderUpButton, breadcrumbLabel, new ToolStripSeparator(), exportRawButton
+            });
 
             // ---- Dense resource filter row ----
             filterToolStrip = new ToolStrip { Name = "toolbar.resourceBrowser", GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top, Renderer = renderer };
@@ -157,8 +207,27 @@ namespace BundleUltimateTool
                 Size = new Size(120, 25),
                 Enabled = false
             };
+            archiveModeButton = new ToolStripButton("Archive")
+            {
+                Name = "cmd.view.archive", CheckOnClick = true, Checked = true,
+                ToolTipText = UiLocalization.TranslateId("cmd.view.archive.tooltip", "Browse the open archive", _uiLanguage)
+            };
+            filesModeButton = new ToolStripButton("Files")
+            {
+                Name = "cmd.view.files", CheckOnClick = true, Checked = false,
+                ToolTipText = UiLocalization.TranslateId("cmd.view.files.tooltip", "Browse the game folder", _uiLanguage)
+            };
+            archiveModeButton.CheckedChanged += (s, e) =>
+            {
+                if (archiveModeButton.Checked && _filesMode) SetFilesMode(false);
+            };
+            filesModeButton.CheckedChanged += (s, e) =>
+            {
+                if (filesModeButton.Checked && !_filesMode) SetFilesMode(true);
+            };
             filterToolStrip.Items.AddRange(new ToolStripItem[]
             {
+                archiveModeButton, filesModeButton, new ToolStripSeparator(),
                 new ToolStripLabel("Search") { Name = "label.search" }, searchTextBox,
                 new ToolStripSeparator(),
                 new ToolStripLabel("Type:") { Name = "label.type" }, typeFilterComboBox
@@ -188,9 +257,55 @@ namespace BundleUltimateTool
             });
             nodeTreeView.ContextMenuStrip = treeContextMenu;
 
+            gameFileTreeView = new MultiSelectTreeView
+            {
+                Name = "tree.gameFiles", Dock = DockStyle.Fill,
+                HideSelection = false, Visible = false
+            };
+            gameFileContextMenu = new ContextMenuStrip { Name = "context.gameFiles", Renderer = renderer };
+            openFromFolderItem = new ToolStripMenuItem("Open as archive") { Name = "cmd.file.openFromFolder" };
+            copyPathItem = new ToolStripMenuItem("Copy full path") { Name = "cmd.file.copyPath" };
+            gameFileContextMenu.Items.AddRange(new ToolStripItem[] { openFromFolderItem, copyPathItem });
+            gameFileTreeView.ContextMenuStrip = gameFileContextMenu;
+
             var leftPanel = new Panel { Dock = DockStyle.Fill };
             leftPanel.Controls.Add(nodeTreeView);
+            leftPanel.Controls.Add(gameFileTreeView);
             leftPanel.Controls.Add(filterToolStrip);
+
+            // No-results state lives inside the tree panel, never as a new window.
+            noResultsPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Visible = false
+            };
+            noResultsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            noResultsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            noResultsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            noResultsPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            var noResultsContent = new TableLayoutPanel
+            {
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Anchor = AnchorStyles.None, ColumnCount = 1, RowCount = 2,
+                Margin = new Padding(4), Padding = Padding.Empty
+            };
+            noResultsContent.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            noResultsContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            noResultsContent.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            noResultsLabel = new Label
+            {
+                AutoSize = true, MaximumSize = new Size(260, 0), TextAlign = ContentAlignment.MiddleCenter,
+                Margin = new Padding(0, 0, 0, 4)
+            };
+            clearFilterButton = new Button
+            {
+                AutoSize = true, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false,
+                Padding = new Padding(8, 2, 8, 2), Margin = Padding.Empty
+            };
+            clearFilterButton.Click += (s, e) => ClearFilters();
+            noResultsContent.Controls.Add(noResultsLabel, 0, 0);
+            noResultsContent.Controls.Add(clearFilterButton, 0, 1);
+            noResultsPanel.Controls.Add(noResultsContent, 0, 1);
+            leftPanel.Controls.Add(noResultsPanel);
 
             // ---- Preview side ----
             previewBox = new PictureBox
@@ -208,7 +323,8 @@ namespace BundleUltimateTool
             mode2DButton = new ToolStripButton("Texture")
             {
                 Name = "view.mode2d", Checked = true, CheckOnClick = false,
-                Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold)
+                Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
+                ToolTipText = UiLocalization.TranslateId("view.mode2d.tooltip", "Texture preview", _uiLanguage)
             };
             viewModeToolStrip.Items.AddRange(new ToolStripItem[]
             {
@@ -216,8 +332,16 @@ namespace BundleUltimateTool
                 new ToolStripSeparator(), mode2DButton
             });
 
+            filePreviewTextBox = new TextBox
+            {
+                Name = "preview.fileText", Dock = DockStyle.Fill, Multiline = true,
+                ReadOnly = true, WordWrap = false, ScrollBars = ScrollBars.Both,
+                BorderStyle = BorderStyle.Fixed3D,
+                Font = new Font("Consolas", 9F), Visible = false
+            };
             var topViewPanel = new Panel { Dock = DockStyle.Fill };
             topViewPanel.Controls.Add(previewBox);
+            topViewPanel.Controls.Add(filePreviewTextBox);
             topViewPanel.Controls.Add(viewModeToolStrip);
             previewMessageLabel = new Label
             {
@@ -281,12 +405,33 @@ namespace BundleUltimateTool
             statusStrip = new StatusStrip { Name = "status.bar", Renderer = renderer, SizingGrip = false };
             statusStateLabel = new ToolStripStatusLabel("Ready") { Name = "status.state" };
             statusPathLabel = new ToolStripStatusLabel(string.Empty) { Name = "status.path", Spring = true, TextAlign = ContentAlignment.MiddleLeft };
-            statusStrip.Items.AddRange(new ToolStripItem[] { statusStateLabel, statusPathLabel });
+            statusProgress = new ToolStripProgressBar
+            {
+                Name = "status.progress", Style = ProgressBarStyle.Marquee,
+                Width = 90, Visible = false
+            };
+            statusStrip.Items.AddRange(new ToolStripItem[]
+            {
+                statusStateLabel, statusProgress, statusPathLabel
+            });
 
             Controls.Add(mainSplit);
             Controls.Add(statusStrip);
             Controls.Add(mainToolStrip);
             Controls.Add(menuStrip);
+
+            // Explicit reading order: menu, toolbars, filter, tree, preview, properties, status.
+            menuStrip.TabIndex = 0;
+            mainToolStrip.TabIndex = 1;
+            filterToolStrip.TabIndex = 2;
+            nodeTreeView.TabIndex = 3;
+            gameFileTreeView.TabIndex = 4;
+            noResultsPanel.TabIndex = 5;
+            viewModeToolStrip.TabIndex = 6;
+            previewBox.TabIndex = 7;
+            filePreviewTextBox.TabIndex = 8;
+            propGrid.TabIndex = 9;
+            statusStrip.TabIndex = 10;
 
             InitializeWorkspaceStates(topViewPanel, propertyBodyPanel);
 

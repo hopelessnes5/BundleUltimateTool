@@ -27,7 +27,11 @@ namespace BundleUltimateTool.Commands
         ExportObjAll,
         SaveStrings,
         ViewDefs,
-        AssembleBundle
+        AssembleBundle,
+        SelectGameFolder,
+        FolderUp,
+        OpenFromFolder,
+        CopyPath
     }
 
     // Command set with document-dependent Enable rules for export and table actions.

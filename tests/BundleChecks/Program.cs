@@ -6,6 +6,7 @@ using System.Xml.Linq;
 using BundleFormat.Bundle;
 using BundleFormat.Models;
 using BundleFormat.Compression;
+using BundleFormat.IO;
 using BundleFormat.Primitives;
 using BundleFormat.Tables;
 using BundleFormat.Textures;
@@ -523,6 +524,21 @@ Eq("DEFS synthetic[0].defID", parsedDefs.Entries[0].DefIdHex, "1234ABCD");
 Eq("DEFS synthetic[0].offset", parsedDefs.Entries[0].Offset, 100u);
 Eq("DEFS synthetic[1].type", parsedDefs.Entries[1].Type, 18u);
 Eq("DEFS synthetic[1].offset", parsedDefs.Entries[1].Offset, 200u);
+
+// ---- game path rules ----
+Check("PATH IsBundleFile .bundle", GamePathRules.IsBundleFile(@"C:\games\a.BUNDLE"), "true");
+Check("PATH IsBundleFile .bndl mixed case", GamePathRules.IsBundleFile("VEHICLELIST.BNDL"), "true");
+Check("PATH IsBundleFile .bin", GamePathRules.IsBundleFile("VEHICLETEX.bin"), "true");
+Check("PATH IsBundleFile rejects .txt", !GamePathRules.IsBundleFile("notes.txt"), "false");
+Check("PATH IsTextFile .txt/.xml/.json/.md",
+    GamePathRules.IsTextFile("a.txt") && GamePathRules.IsTextFile("a.XML") &&
+    GamePathRules.IsTextFile("a.json") && GamePathRules.IsTextFile("a.md"), "true");
+Check("PATH IsTextFile rejects .bundle", !GamePathRules.IsTextFile("a.bundle"), "false");
+Eq("PATH FormatSize bytes", GamePathRules.FormatSize(512), "512 B");
+Eq("PATH FormatSize KB", GamePathRules.FormatSize(2048), "2.0 KB");
+Eq("PATH FormatSize MB", GamePathRules.FormatSize(2 * 1024 * 1024), "2.0 MB");
+Eq("PATH GetExtensionLabel", GamePathRules.GetExtensionLabel("a.BUNDLE"), "BUNDLE");
+Eq("PATH GetExtensionLabel no extension", GamePathRules.GetExtensionLabel("README"), "FILE");
 
 // ---- localization consistency ----
 Dictionary<string, string> englishCatalog = new(StringComparer.Ordinal);

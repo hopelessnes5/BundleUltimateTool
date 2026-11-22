@@ -7,6 +7,7 @@ namespace BundleUltimateTool.Settings
     {
         internal bool DarkTheme { get; set; } = true;
         internal string UiLanguage { get; set; }
+        internal string GameFolderPath { get; set; }
         internal List<string> RecentFiles { get; } = new();
     }
 }

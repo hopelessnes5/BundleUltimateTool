@@ -1,5 +1,6 @@
 using System.Windows.Forms;
 using BundleUltimateTool.Commands;
+using BundleUltimateTool.Documents;
 using BundleUltimateTool.UI;
 
 namespace BundleUltimateTool
@@ -32,12 +33,28 @@ namespace BundleUltimateTool
         private void UpdateWorkspaceState()
         {
             if (_emptyDocument == null || IsDisposed) return;
+            bool hasProperties = propGrid.SelectedObjects != null && propGrid.SelectedObjects.Length > 0;
+
+            if (_filesMode)
+            {
+                _emptyDocument.Visible = false;
+                if (!_gameFolderModel.HasRoot && noResultsPanel != null) noResultsPanel.Visible = false;
+                previewBox.Visible = false;
+                filePreviewTextBox.Visible = hasProperties && propGrid.SelectedObject is GameFileProperties;
+                propGrid.Visible = hasProperties;
+                _emptyProperties.Visible = !hasProperties;
+                if (!hasProperties) _emptyProperties.BringToFront();
+                typeFilterComboBox.Enabled = _gameFolderModel.HasRoot;
+                return;
+            }
+
             bool hasDocument = _document != null;
+            if (!hasDocument && noResultsPanel != null) noResultsPanel.Visible = false;
             _emptyDocument.Visible = !hasDocument;
             previewBox.Visible = hasDocument;
             if (!hasDocument) _emptyDocument.BringToFront();
+            filePreviewTextBox.Visible = false;
 
-            bool hasProperties = propGrid.SelectedObjects != null && propGrid.SelectedObjects.Length > 0;
             propGrid.Visible = hasProperties;
             _emptyProperties.Visible = !hasProperties;
             if (!hasProperties) _emptyProperties.BringToFront();
@@ -55,6 +72,12 @@ namespace BundleUltimateTool
                 UiLocalization.TranslateId("workspace.empty.open", "Open bundle...", _uiLanguage));
             _emptyProperties.Text = UiLocalization.TranslateId("workspace.properties.empty",
                 "Select an entry in the tree to see its properties.", _uiLanguage);
+            if (noResultsLabel != null)
+            {
+                noResultsLabel.Text = UiLocalization.TranslateId("filter.noResults",
+                    "No entries match the filter", _uiLanguage);
+                clearFilterButton.Text = UiLocalization.TranslateId("filter.clear", "Clear filter", _uiLanguage);
+            }
             UpdateWorkspaceState();
         }
 

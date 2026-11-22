@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 using BundleFormat.Bundle;
@@ -28,8 +29,9 @@ namespace BundleUltimateTool
         private void InitializeBundleUi()
         {
             nodeTreeView.AfterSelect += (s, e) => OnNodeSelected();
-            searchTextBox.TextChanged += (s, e) => RebuildTree();
-            typeFilterComboBox.SelectedIndexChanged += (s, e) => RebuildTree();
+            searchTextBox.TextChanged += (s, e) => { if (_filesMode) RefreshGameTree(); else RebuildTree(); };
+            typeFilterComboBox.SelectedIndexChanged += (s, e) => { if (_filesMode) RefreshGameTree(); else RebuildTree(); };
+            InitializeGameFolderUi();
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -41,8 +43,21 @@ namespace BundleUltimateTool
             base.OnFormClosed(e);
         }
 
+        private void SetBusy(bool busy)
+        {
+            if (statusProgress != null && !statusProgress.IsDisposed) statusProgress.Visible = busy;
+            Cursor = busy ? Cursors.WaitCursor : Cursors.Default;
+            if (busy)
+            {
+                statusStrip?.Refresh();
+                Application.DoEvents(); // allow one repaint before synchronous parsing
+            }
+        }
+
         private void OpenBundle(string path)
         {
+            bool retry = false;
+            SetBusy(true);
             try
             {
                 BundleReader reader = BundleReader.Open(path);
@@ -66,11 +81,22 @@ namespace BundleUltimateTool
             catch (Exception ex)
             {
                 ApplicationLog.Write("OPEN_FAILED", $"Could not open bundle '{path}'.", ex);
-                MessageBox.Show(this,
-                    string.Format(UiLocalization.TranslateId("error.openFailed.body",
-                        "Could not open bundle:\n{0}", _uiLanguage), ex.Message),
+                string message = string.Format(
+                    UiLocalization.TranslateId("error.openFailed.body", "Could not open bundle:\n{0}", _uiLanguage),
+                    ex.Message);
+                message += "\n\n" + UiLocalization.TranslateId("error.nextStep",
+                    "Check the path or choose a different file.", _uiLanguage);
+                DialogResult answer = MessageBox.Show(this, message,
                     UiLocalization.TranslateId("error.openFailed.title", "Cannot open bundle", _uiLanguage),
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
+                retry = answer == DialogResult.Retry;
+            }
+            finally { SetBusy(false); }
+
+            if (retry)
+            {
+                if (IsHandleCreated) BeginInvoke((Action)OnOpenDialog);
+                else OnOpenDialog();
             }
         }
 
@@ -97,13 +123,17 @@ namespace BundleUltimateTool
                 string query = (searchTextBox?.Text ?? string.Empty).Trim();
                 uint? typeFilter = (typeFilterComboBox?.SelectedItem as TypeFilterOption)?.FileType;
 
+                int shown = 0;
                 foreach (BundleEntry entry in _document.Entries)
                 {
                     if (typeFilter.HasValue && entry.FileType != typeFilter.Value) continue;
                     string text = EntryDisplayText(entry);
                     if (query.Length > 0 && text.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) continue;
                     nodeTreeView.Nodes.Add(new TreeNode(text) { Tag = entry.Index, ToolTipText = text });
+                    shown++;
                 }
+
+                if (noResultsPanel != null) noResultsPanel.Visible = shown == 0;
 
                 if (previousIndex >= 0)
                 {
@@ -114,6 +144,28 @@ namespace BundleUltimateTool
             }
             finally { nodeTreeView.EndUpdate(); }
             UpdateWorkspaceState();
+        }
+
+        private void ClearFilters()
+        {
+            if (searchTextBox != null) searchTextBox.Text = string.Empty;
+            RefreshTypeFilterOptions();
+            if (typeFilterComboBox != null && typeFilterComboBox.Items.Count > 0)
+                typeFilterComboBox.SelectedIndex = 0;
+            RebuildTree();
+        }
+
+        private static string FitStatusText(string text, Font font, int availableWidth)
+        {
+            if (string.IsNullOrEmpty(text) || availableWidth <= 8) return text ?? string.Empty;
+            if (TextRenderer.MeasureText(text, font).Width <= availableWidth) return text;
+            const string ellipsis = "…";
+            for (int length = text.Length - 1; length > 0; length--)
+            {
+                string candidate = text.Substring(0, length) + ellipsis;
+                if (TextRenderer.MeasureText(candidate, font).Width <= availableWidth) return candidate;
+            }
+            return ellipsis;
         }
 
         private void OnNodeSelected()
@@ -172,6 +224,7 @@ namespace BundleUltimateTool
             {
                 SetStatus(UiLocalization.TranslateId("status.ready", "Ready", _uiLanguage));
                 statusPathLabel.Text = string.Empty;
+                statusPathLabel.ToolTipText = string.Empty;
                 return;
             }
 
@@ -182,8 +235,12 @@ namespace BundleUltimateTool
                 text += " | " + UiLocalization.TranslateId("status.tableOffsetNote",
                     "tableOffset differs; using 48", _uiLanguage);
             SetStatus(text);
-            statusPathLabel.Text = string.Format(
+            string fullPath = string.Format(
                 UiLocalization.TranslateId("status.file", "File: {0}", _uiLanguage), _document.Path);
+            statusPathLabel.ToolTipText = _document.Path;
+            int available = Math.Max(80, statusStrip.ClientSize.Width - statusStateLabel.Width -
+                (statusProgress != null && statusProgress.Visible ? statusProgress.Width : 0) - 24);
+            statusPathLabel.Text = FitStatusText(fullPath, statusPathLabel.Font, available);
         }
     }
 }

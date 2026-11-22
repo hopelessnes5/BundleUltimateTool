@@ -53,6 +53,28 @@ namespace BundleUltimateTool
                 nodeTreeView.ForeColor = palette.Text;
                 nodeTreeView.LineColor = palette.Border;
             }
+            if (nodeTreeView != null) nodeTreeView.FocusIndicatorColor = palette.Accent;
+            if (gameFileTreeView != null)
+            {
+                gameFileTreeView.BackColor = palette.Surface;
+                gameFileTreeView.ForeColor = palette.Text;
+                gameFileTreeView.LineColor = palette.Border;
+                gameFileTreeView.FocusIndicatorColor = palette.Accent;
+            }
+            if (filePreviewTextBox != null)
+            {
+                filePreviewTextBox.BackColor = palette.Input;
+                filePreviewTextBox.ForeColor = palette.Text;
+            }
+            if (breadcrumbLabel != null) breadcrumbLabel.ForeColor = palette.SecondaryText;
+            if (noResultsPanel != null)
+            {
+                noResultsPanel.BackColor = palette.Surface;
+                noResultsLabel.ForeColor = palette.SecondaryText;
+                clearFilterButton.BackColor = palette.Input;
+                clearFilterButton.ForeColor = palette.Text;
+                clearFilterButton.FlatAppearance.BorderColor = palette.Accent;
+            }
 
             if (propGrid != null)
             {

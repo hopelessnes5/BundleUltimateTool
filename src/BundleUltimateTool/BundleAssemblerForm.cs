@@ -22,6 +22,8 @@ namespace BundleUltimateTool
         private readonly Button _assembleButton;
         private readonly Button _cancelButton;
         private readonly Label _statusLabel;
+        private readonly ProgressBar _progress;
+        private readonly ToolTip _listToolTip;
         private readonly bool _dark;
         private readonly string _language;
         private readonly Action<string> _openBundle;
@@ -45,15 +47,23 @@ namespace BundleUltimateTool
             BackColor = palette.Surface;
             ForeColor = palette.Text;
 
+            _listToolTip = new ToolTip();
+            _progress = new ProgressBar
+            {
+                Style = ProgressBarStyle.Marquee, Dock = DockStyle.Fill,
+                Height = 12, Visible = false
+            };
+
             var layout = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4,
+                Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 5,
                 Padding = new Padding(6), Margin = Padding.Empty
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
@@ -83,11 +93,31 @@ namespace BundleUltimateTool
             });
             layout.Controls.Add(buttons, 0, 2);
             layout.SetColumnSpan(buttons, 2);
+            layout.Controls.Add(_progress, 0, 3);
+            layout.SetColumnSpan(_progress, 2);
 
             _statusLabel = new Label { Dock = DockStyle.Fill, Height = 20, AutoEllipsis = true };
-            layout.Controls.Add(_statusLabel, 0, 3);
+            layout.Controls.Add(_statusLabel, 0, 4);
             layout.SetColumnSpan(_statusLabel, 2);
             Controls.Add(layout);
+
+            // Compact controls: tooltips carry the full text/path for clipped labels.
+            foreach (Button button in new[] { _addBundleButton, _addNfsButton, _clearButton, _assembleButton, _cancelButton })
+                _listToolTip.SetToolTip(button, button.Text);
+            _bundleList.MouseMove += (s, e) =>
+            {
+                int index = _bundleList.IndexFromPoint(e.Location);
+                string tip = index >= 0 && index < _bundleList.Items.Count && _bundleList.Items[index] is string name &&
+                    _bundlePaths.TryGetValue(name, out string path) ? path : string.Empty;
+                _listToolTip.SetToolTip(_bundleList, tip);
+            };
+            _nfsList.MouseMove += (s, e) =>
+            {
+                int index = _nfsList.IndexFromPoint(e.Location);
+                string tip = index >= 0 && index < _nfsList.Items.Count && _nfsList.Items[index] is string name &&
+                    _nfsPaths.TryGetValue(name, out string path) ? path : string.Empty;
+                _listToolTip.SetToolTip(_nfsList, tip);
+            };
 
             ApplyPalette(palette);
             _bundleList.SelectedIndexChanged += (s, e) => UpdateState();
@@ -116,6 +146,7 @@ namespace BundleUltimateTool
             _nfsList.BackColor = palette.Input;
             _nfsList.ForeColor = palette.Text;
             _statusLabel.ForeColor = palette.SecondaryText;
+            _progress.BackColor = palette.Input;
             foreach (Control control in Controls)
             {
                 if (control is Button button)
@@ -231,6 +262,10 @@ namespace BundleUltimateTool
 
             Enabled = false;
             Cursor = Cursors.WaitCursor;
+            _progress.Visible = true;
+            Refresh();
+            Application.DoEvents(); // let the progress cue paint before synchronous work
+            Exception failure = null;
             try
             {
                 BundleAssemblerReport report = BundleAssembler.Rebuild(source, output, replacements);
@@ -246,18 +281,27 @@ namespace BundleUltimateTool
                     MessageBoxButtons.YesNo, MessageBoxIcon.Information);
                 if (open == DialogResult.Yes) _openBundle?.Invoke(output);
                 Close();
+                return;
             }
             catch (Exception ex)
             {
+                failure = ex;
                 ApplicationLog.Write("ASSEMBLE_FAILED", $"source='{source}': {ex.Message}", ex);
-                MessageBox.Show(this,
-                    string.Format(T("assembler.failed", "Assembly failed:\n{0}"), ex.Message),
-                    T("assembler.title", "Bundle assembler"), MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
             {
+                _progress.Visible = false;
                 Cursor = Cursors.Default;
                 if (!IsDisposed) Enabled = true;
+            }
+
+            if (failure != null && !IsDisposed)
+            {
+                string message = string.Format(T("assembler.failed", "Assembly failed:\n{0}"), failure.Message);
+                message += "\n\n" + T("error.nextStep", "Check the path or choose a different file.");
+                var answer = MessageBox.Show(this, message, T("assembler.title", "Bundle assembler"),
+                    MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
+                if (answer == DialogResult.Retry) OnAssemble(sender, e);
             }
         }
 

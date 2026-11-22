@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -27,6 +28,9 @@ namespace BundleUltimateTool
 
         public event EventHandler SelectedNodesChanged;
 
+        /// <summary>Raised when Enter is pressed on a node (same semantics as activation).</summary>
+        public event EventHandler<NodeActivatedEventArgs> NodeActivated;
+
         /// <summary>True while a Ctrl/Shift selection gesture is being applied, including native AfterSelect notifications.</summary>
         public bool IsSelectionGestureInProgress { get; private set; }
 
@@ -37,6 +41,11 @@ namespace BundleUltimateTool
         [Browsable(false)]
         [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Color AdditionalSelectionForeColor { get; set; } = Color.White;
+
+        /// <summary>Thin keyboard-focus indicator; supplied by the host theme.</summary>
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public Color FocusIndicatorColor { get; set; } = Color.FromArgb(129, 195, 255);
 
         private void RaiseSelectedNodesChanged()
         {
@@ -239,6 +248,12 @@ namespace BundleUltimateTool
                         return;
                     }
 
+                    if (key == Keys.Enter)
+                    {
+                        NodeActivated?.Invoke(this, new NodeActivatedEventArgs(SelectedNode));
+                        return;
+                    }
+
                     TreeNode previousActive = SelectedNode;
                     base.WndProc(ref m);
                     if (_insideSelectionUpdate) return;
@@ -400,8 +415,22 @@ namespace BundleUltimateTool
             TextRenderer.DrawText(e.Graphics, e.Node.Text ?? string.Empty, nodeFont, textBounds,
                 foreground, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
-            // The active row already has a distinct selection fill. Avoid an extra full-row
-            // focus rectangle: it creates a bright outline around selected ranges in dark mode.
+            // Keyboard focus cue: a thin dotted inset outline around the text area only.
+            // Avoid a bright full-row outline, which is noisy in dark mode.
+            if ((e.State & TreeNodeStates.Focused) != 0)
+            {
+                var focusBounds = new Rectangle(textBounds.Left, textBounds.Top + 1,
+                    Math.Max(1, textBounds.Width - 2), Math.Max(1, textBounds.Height - 3));
+                using var pen = new Pen(FocusIndicatorColor, 1f) { DashStyle = DashStyle.Dot };
+                e.Graphics.DrawRectangle(pen, focusBounds);
+            }
         }
+    }
+
+    public sealed class NodeActivatedEventArgs : EventArgs
+    {
+        public NodeActivatedEventArgs(TreeNode node) => Node = node;
+
+        public TreeNode Node { get; }
     }
 }

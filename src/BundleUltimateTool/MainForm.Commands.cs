@@ -4,6 +4,7 @@ using System.Linq;
 using System.Windows.Forms;
 using BundleFormat.Bundle;
 using BundleUltimateTool.Commands;
+using BundleUltimateTool.Documents;
 using BundleUltimateTool.UI;
 
 namespace BundleUltimateTool
@@ -28,18 +29,26 @@ namespace BundleUltimateTool
                 [EditorDocumentCommandId.ExportObjAll] = () => ExportObj(selectedOnly: false),
                 [EditorDocumentCommandId.SaveStrings] = SaveStrings,
                 [EditorDocumentCommandId.ViewDefs] = ViewDefs,
-                [EditorDocumentCommandId.AssembleBundle] = ShowAssembler
+                [EditorDocumentCommandId.AssembleBundle] = ShowAssembler,
+                [EditorDocumentCommandId.SelectGameFolder] = SelectGameFolder,
+                [EditorDocumentCommandId.FolderUp] = () => NavigateGameUp(),
+                [EditorDocumentCommandId.OpenFromFolder] = () => OpenFromFolder(),
+                [EditorDocumentCommandId.CopyPath] = () => CopySelectedPaths()
             }, id => id switch
             {
-                EditorDocumentCommandId.ExportRawSelected or EditorDocumentCommandId.ExportRawAll => _document != null,
+                EditorDocumentCommandId.ExportRawSelected or EditorDocumentCommandId.ExportRawAll =>
+                    !_filesMode && _document != null,
                 EditorDocumentCommandId.ExportTextureSelected or EditorDocumentCommandId.ExportTextureAll =>
-                    _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.Texture),
+                    !_filesMode && _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.Texture),
                 EditorDocumentCommandId.ExportObjSelected or EditorDocumentCommandId.ExportObjAll =>
-                    _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.Model),
+                    !_filesMode && _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.Model),
                 EditorDocumentCommandId.SaveStrings =>
-                    _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.StringsTable),
+                    !_filesMode && _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.StringsTable),
                 EditorDocumentCommandId.ViewDefs =>
-                    _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.DefsTable),
+                    !_filesMode && _document != null && _document.Entries.Any(e => e.FileType == (uint)NfsFileType.DefsTable),
+                EditorDocumentCommandId.FolderUp => _filesMode && _gameFolderModel.CurrentRelativePath.Length > 0,
+                EditorDocumentCommandId.OpenFromFolder or EditorDocumentCommandId.CopyPath =>
+                    _filesMode && gameFileTreeView.SelectedNode?.Tag is GameFileEntry,
                 _ => true
             });
 
@@ -67,6 +76,11 @@ namespace BundleUltimateTool
             ToolStripCommandBinding.Bind(saveStringsContextItem, _commands[EditorDocumentCommandId.SaveStrings]);
             ToolStripCommandBinding.Bind(viewDefsContextItem, _commands[EditorDocumentCommandId.ViewDefs]);
             ToolStripCommandBinding.Bind(toolsAssembleItem, _commands[EditorDocumentCommandId.AssembleBundle]);
+            ToolStripCommandBinding.Bind(selectGameFolderMenuItem, _commands[EditorDocumentCommandId.SelectGameFolder]);
+            ToolStripCommandBinding.Bind(selectGameFolderButton, _commands[EditorDocumentCommandId.SelectGameFolder]);
+            ToolStripCommandBinding.Bind(folderUpButton, _commands[EditorDocumentCommandId.FolderUp]);
+            ToolStripCommandBinding.Bind(openFromFolderItem, _commands[EditorDocumentCommandId.OpenFromFolder]);
+            ToolStripCommandBinding.Bind(copyPathItem, _commands[EditorDocumentCommandId.CopyPath]);
 
             aboutMenuItem.Click += (s, e) => OnAbout();
         }

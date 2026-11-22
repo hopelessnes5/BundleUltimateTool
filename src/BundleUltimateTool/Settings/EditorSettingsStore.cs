@@ -19,6 +19,7 @@ namespace BundleUltimateTool.Settings
                 string value = line.Substring(equals + 1).Trim();
                 if (key == "DarkTheme" && bool.TryParse(value, out bool dark)) settings.DarkTheme = dark;
                 else if (key.Equals("UiLanguage", StringComparison.OrdinalIgnoreCase)) settings.UiLanguage = value;
+                else if (key.Equals("GameFolderPath", StringComparison.OrdinalIgnoreCase)) settings.GameFolderPath = value;
                 else if (key.StartsWith("RecentFile", StringComparison.OrdinalIgnoreCase))
                 {
                     try
@@ -37,6 +38,7 @@ namespace BundleUltimateTool.Settings
             var content = new StringBuilder();
             content.Append("DarkTheme=").Append(settings.DarkTheme).Append('\n');
             content.Append("UiLanguage=").Append(settings.UiLanguage ?? string.Empty).Append('\n');
+            content.Append("GameFolderPath=").Append(settings.GameFolderPath ?? string.Empty).Append('\n');
             for (int i = 0; i < Math.Min(RecentFileHistory.Capacity, settings.RecentFiles.Count); i++)
             {
                 string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(settings.RecentFiles[i]));

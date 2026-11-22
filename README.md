@@ -26,6 +26,13 @@ BundleUltimateTool — Windows-утилита для просмотра, изв�
 - Сборщик архивов: замена записей по `.nfs`-файлам `file_0000.nfs`, запись во
   временный файл с последующей атомарной заменой цели (исправлен баг оригинала,
   который оставлял `.temp` и никогда не переименовывал результат).
+- Выбор папки с игрой (`Файл → Выбрать папку игры`) и обзор всех файлов прямо в
+  приложении: два режима дерева (`Архив` / `Файлы`), ленивая загрузка каталогов,
+  breadcrumb, кнопка «Наверх», поиск и фильтр по расширению, `Ctrl`/`Shift`-выделение,
+  копирование полных путей. Двойной щелчок по `.bundle`/`.bndl`/`.bin` открывает архив.
+- Предпросмотр любого файла: текстовые файлы — текстом (UTF-8/Res fallback, до 256 КБ),
+  остальные — HEX-дампом (16 байт в строке + ASCII); для `.dds` показывается HEX
+  с пояснением, декодированный предпросмотр текстур доступен в режиме архива.
 
 ## Стек и требования
 
@@ -42,10 +49,11 @@ dotnet run --project tests/BundleChecks/BundleChecks.csproj -c Release
 .\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe
 ```
 
-Архив можно передать аргументом командной строки (в том числе из Проводника):
+Архив или папку игры можно передать аргументом командной строки (в том числе из Проводника):
 
 ```powershell
 .\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe "F:\path\to\file.bundle"
+.\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe --game-folder "F:\Games\NFS HP"
 ```
 
 Проверки используют эталонные файлы из `F:\repos\nfs-bundle-explorer\src\test`
@@ -63,6 +71,8 @@ dotnet run --project tests/BundleChecks/BundleChecks.csproj -c Release
   (например, 4885 B против 4448 B); это зафиксировано в тестах и не влияет на данные.
 - STRINGS-таблицы нет в эталонных архивах, поэтому её разбор покрыт синтетическим тестом.
 - Пересборка поверх исходного файла допускается только после явного подтверждения.
+- Папка игры выбирается вручную (диалог или `--game-folder`); автоопределения установленных игр нет.
+- Скрытые и системные записи (например `.svn`) показываются как обычные папки.
 
 ## Благодарности
 
@@ -97,6 +107,13 @@ compact bundle assembler.
 - DEFS: compact table inside the property panel (Field ID, Offset, Type).
 - Bundle assembler: replace entries from `file_0000.nfs`-style files; writes to a unique
   temp file and atomically replaces the target (fixing the original `.temp` bug).
+- Game folder selection (`File → Select game folder...`) and an in-app browser for ALL
+  files: two tree modes (Archive / Files), lazy directory loading, breadcrumb, Up button,
+  name search and extension filter, Ctrl/Shift multi-select, copy full paths. Double-click
+  a `.bundle`/`.bndl`/`.bin` file to open it as an archive.
+- Preview for any file: text files as text (UTF-8 with Latin-1 fallback, 256 KB cap),
+  others as a 16-byte-per-row hex + ASCII dump; `.dds` is shown as hex with a note, while
+  decoded texture preview remains available in archive mode.
 
 ## Stack and requirements
 
@@ -112,10 +129,12 @@ dotnet run --project tests/BundleChecks/BundleChecks.csproj -c Release
 .\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe
 ```
 
-A bundle may also be passed as a command-line argument (including from Windows Explorer):
+A bundle or a game folder may also be passed as a command-line argument (including from
+Windows Explorer):
 
 ```powershell
 .\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe "F:\path\to\file.bundle"
+.\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe --game-folder "F:\Games\NFS HP"
 ```
 
 Fixture checks read the reference files from `F:\repos\nfs-bundle-explorer\src\test`
@@ -134,6 +153,9 @@ executable; logs go to `%LOCALAPPDATA%\BundleUltimateTool\Logs`.
 - No STRINGS table exists in the bundled fixtures, so its parser is covered by a
   synthetic test.
 - Rebuilding in place requires explicit user confirmation.
+- The game folder is chosen manually (dialog or `--game-folder`); installed games are not
+  auto-detected.
+- Hidden/system entries (for example `.svn`) are shown like regular folders.
 
 ## Credits
 

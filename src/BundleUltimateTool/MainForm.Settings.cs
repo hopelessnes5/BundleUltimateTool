@@ -14,7 +14,8 @@ namespace BundleUltimateTool
             var settings = new EditorSettings
             {
                 DarkTheme = _isDarkTheme,
-                UiLanguage = _uiLanguage
+                UiLanguage = _uiLanguage,
+                GameFolderPath = _gameFolderPath
             };
             settings.RecentFiles.AddRange(_recentFiles.Snapshot());
             return settings;
@@ -33,6 +34,9 @@ namespace BundleUltimateTool
                 EditorSettings settings = _settingsStore.Load(GetConfigPath(), CaptureSettings());
                 _isDarkTheme = settings.DarkTheme;
                 _uiLanguage = UiLocalization.NormalizeLanguageCode(settings.UiLanguage);
+                if (!string.IsNullOrWhiteSpace(settings.GameFolderPath) &&
+                    System.IO.Directory.Exists(settings.GameFolderPath))
+                    _gameFolderPath = settings.GameFolderPath;
                 _recentFiles.Restore(settings.RecentFiles);
             }
             catch { /* Preserve defaults when preferences cannot be read. */ }
