@@ -1,0 +1,45 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Xx]64/
+[Bb]uild/
+[Oo]ut/
+artifacts/
+publish/
+*.tmp
+*.temp
+
+# Visual Studio / IDE user files
+.vs/
+.vscode/
+.idea/
+*.user
+*.userosscache
+*.userprefs
+*.suo
+*.sln.docstates
+
+# .NET binaries and intermediate files
+*.dll
+*.exe
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+*.nupkg
+*.cache
+project.lock.json
+project.fragment.lock.json
+*.nuget.props
+*.nuget.targets
+
+# Runtime-generated application data
+settings.ini
+Logs/
+*.log
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
