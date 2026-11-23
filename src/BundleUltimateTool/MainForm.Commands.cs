@@ -28,7 +28,14 @@ namespace BundleUltimateTool
                 [EditorDocumentCommandId.ExportObjSelected] = () => ExportObj(selectedOnly: true),
                 [EditorDocumentCommandId.ExportObjAll] = () => ExportObj(selectedOnly: false),
                 [EditorDocumentCommandId.ExportUsdSelected] = ExportUsdSelected,
-                [EditorDocumentCommandId.ExportAuto] = () => ExportAuto(selectedOnly: false),
+                [EditorDocumentCommandId.ExportAuto] = () =>
+                {
+                    // Selected archive root -> export that archive only; selected entries ->
+                    // export them; nothing selected -> export everything.
+                    BundleDocument selectedArchive = nodeTreeView?.SelectedNode?.Tag as BundleDocument;
+                    bool selectedEntries = selectedArchive == null && GetSelectedViews().Count > 0;
+                    ExportAuto(selectedEntries, selectedArchive);
+                },
                 [EditorDocumentCommandId.SaveStrings] = SaveStrings,
                 [EditorDocumentCommandId.ViewDefs] = ViewDefs,
                 [EditorDocumentCommandId.AssembleBundle] = ShowAssembler,

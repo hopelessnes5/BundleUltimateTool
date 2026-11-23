@@ -76,11 +76,13 @@ namespace BundleUltimateTool
                 MessageBoxButtons.OK, failed > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
         }
 
-        internal void ExportAuto(bool selectedOnly)
+        internal void ExportAuto(bool selectedOnly, BundleDocument onlyDocument = null)
         {
             if (_openDocuments.Count == 0) return;
 
-            List<BundleEntryView> views = selectedOnly ? GetSelectedViews() : GetAllViews();
+            List<BundleEntryView> views = onlyDocument != null
+                ? GetAllViews().Where(view => ReferenceEquals(view.Document, onlyDocument)).ToList()
+                : selectedOnly ? GetSelectedViews() : GetAllViews();
             if (views.Count == 0)
             {
                 MessageBox.Show(this,
