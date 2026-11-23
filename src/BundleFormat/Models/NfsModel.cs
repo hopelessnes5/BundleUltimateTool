@@ -19,7 +19,7 @@ public sealed class NfsMesh
 {
     public NfsMeshHeader Header { get; init; }
     public uint VertexSize { get; init; }
-    public bool HasUv => VertexSize == 36 || VertexSize == 48 || VertexSize == 52 || VertexSize == 56 || VertexSize == 60 || VertexSize == 64;
+    public bool HasUv => VertexSize == 24 || VertexSize == 28 || VertexSize == 32 || VertexSize == 36 || VertexSize == 44 || VertexSize == 48 || VertexSize == 52 || VertexSize == 56 || VertexSize == 60 || VertexSize == 64;
     /// <summary>
     /// Material reference hash from mesh header fields when reliably identified.
     /// The known S_NFSMeshHeader layout (112 bytes) in nfs-bundle-explorer does not
@@ -139,19 +139,39 @@ public sealed class NfsModel
                 BinaryPrimitives.ReadSingleLittleEndian(vertex.Slice(16, 4)));
 
             NfsVector2 uv0 = default, uv1 = default, uv2 = default;
-            // UV layouts from nfs-bundle-explorer NFSStructuresDef.h and real-file scan (VEH_118158_MS.BIN + NFS:HP bundles).
+            // UV layouts from nfs-bundle-explorer NFSStructuresDef.h and real-file scan (VEH_118158_MS.BIN + NFS:HP bundles/BNDLs).
             // Known structs:
             //   48: u0/v0 @40, u1/v1 @44
             //   52: u0/v0 @40, u1/v1 @44, u2/v2 @48
             //   60: u0/v0 @52, u1/v1 @56 (binormal shifts UV base)
-            // Credible scan-derived layouts (float16 pairs, finite and mostly in [-2,2]):
+            // Credible scan-derived layouts (float16 pairs, finite and mostly in plausible UV range):
+            //   24: u0/v0 @20 (end-of-vertex; pos(8)+normal(12)=20, only one UV pair fits)
+            //   28: u0/v0 @24 (end-of-vertex; finite=1.000, <=2:58.7% <=10:70.7% <=100:97.9% nz=0.979 n=15340; large tiling UVs common)
+            //   32: u0/v0 @28 (end-of-vertex; finite=1.000 in2=1.000 nz=0.900 n=6725)
             //   36: u0/v0 @28, u1/v1 @32 (end-of-vertex; consistent with pos+normal+bones+weights=28)
+            //   44: u0/v0 @40 (end-of-vertex; finite=1.000 in2=0.883 nz=0.978 n=6623; moderate confidence)
             //   56: u0/v0 @52 (end-of-vertex; consistent with 60-layout minus second UV pair)
             //   64: u0/v0 @52, u1/v1 @56 (matches 60 UV positions; trailing 4 bytes unknown)
-            if (stride == 36)
+            if (stride == 24)
+            {
+                uv0 = ReadUv(vertex, 20);
+            }
+            else if (stride == 28)
+            {
+                uv0 = ReadUv(vertex, 24);
+            }
+            else if (stride == 32)
+            {
+                uv0 = ReadUv(vertex, 28);
+            }
+            else if (stride == 36)
             {
                 uv0 = ReadUv(vertex, 28);
                 uv1 = ReadUv(vertex, 32);
+            }
+            else if (stride == 44)
+            {
+                uv0 = ReadUv(vertex, 40);
             }
             else if (stride == 48)
             {
@@ -178,7 +198,7 @@ public sealed class NfsModel
                 uv0 = ReadUv(vertex, 52);
                 uv1 = ReadUv(vertex, 56);
             }
-            // Unknown strides: position/normal read from leading mesh_vertex_48-compatible fields; UVs remain (0,0).
+            // Unknown/unsupported strides: position/normal read from leading mesh_vertex_48-compatible fields; UVs remain (0,0).
 
             result[i] = new NfsVertex(position, normal, uv0, uv1, uv2);
         }

@@ -8,7 +8,7 @@ public readonly record struct NfsMeshHeader(
     uint VbStartOffset, uint VbSize)
 {
     public const int Size = 112;
-    private static readonly uint[] KnownVertexSizes = { 36, 48, 52, 56, 60, 64 };
+    private static readonly uint[] KnownVertexSizes = { 24, 28, 32, 36, 44, 48, 52, 56, 60, 64 };
 
     public static NfsMeshHeader Parse(ReadOnlySpan<byte> bytes)
     {
@@ -25,27 +25,36 @@ public readonly record struct NfsMeshHeader(
     /// <summary>Faithful port of ChooseVertexSize: align32(size * numVertexes) == VBSize.</summary>
     /// <remarks>
     /// Multiple strides can align to the same VBSize for small numVertexes; in that ambiguous case
-    /// we prefer a stride with credible UV channels, then keep original candidate order for stability.
-    /// Current known/credible UV-carrying strides: 36,48,52,56,60,64.
+    /// we prefer known-struct UV layouts (48/52/60), then scan-derived credible UV layouts, then original candidate order.
+    /// Known/credible UV-carrying strides: 24,28,32,36,44,48,52,56,60,64.
+    /// Adding 28/32/44 creates alignment collisions with existing strides; preference rules keep known-struct layouts stable.
     /// </remarks>
     public static uint ChooseVertexSize(uint numVertexes, uint vbAlignedSize)
     {
         uint firstMatch = 0;
-        uint firstUvMatch = 0;
+        uint firstKnownUvMatch = 0;
+        uint firstCredibleUvMatch = 0;
         foreach (uint vertexSize in KnownVertexSizes)
         {
             ulong unaligned = (ulong)vertexSize * numVertexes;
             ulong aligned = (unaligned + 31UL) & ~31UL;
             if (aligned != vbAlignedSize) continue;
             if (firstMatch == 0) firstMatch = vertexSize;
-            if (firstUvMatch == 0 && HasCredibleUv(vertexSize)) firstUvMatch = vertexSize;
+            if (firstKnownUvMatch == 0 && HasKnownStructUv(vertexSize)) firstKnownUvMatch = vertexSize;
+            if (firstCredibleUvMatch == 0 && HasCredibleUv(vertexSize)) firstCredibleUvMatch = vertexSize;
         }
         if (firstMatch == 0) return 0;
-        return firstUvMatch != 0 ? firstUvMatch : firstMatch;
+        // Prefer known-struct UV layouts, then scan-derived credible UV layouts, then original order.
+        if (firstKnownUvMatch != 0) return firstKnownUvMatch;
+        if (firstCredibleUvMatch != 0) return firstCredibleUvMatch;
+        return firstMatch;
     }
 
+    private static bool HasKnownStructUv(uint vertexSize) =>
+        vertexSize == 48 || vertexSize == 52 || vertexSize == 60;
+
     private static bool HasCredibleUv(uint vertexSize) =>
-        vertexSize == 36 || vertexSize == 48 || vertexSize == 52 || vertexSize == 56 || vertexSize == 60 || vertexSize == 64;
+        vertexSize == 24 || vertexSize == 28 || vertexSize == 32 || vertexSize == 36 || vertexSize == 44 || vertexSize == 48 || vertexSize == 52 || vertexSize == 56 || vertexSize == 60 || vertexSize == 64;
 
     public uint VertexSize => ChooseVertexSize(NumVertexes, VbSize);
 }

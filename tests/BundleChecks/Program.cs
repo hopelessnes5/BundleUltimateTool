@@ -548,9 +548,10 @@ WithFixture("VEH_118158_MS.BIN", reader =>
     int materialCount = System.Text.RegularExpressions.Regex.Matches(usdText, "def Material \"Mat_").Count;
     Check("USD creates one material per geometry part", materialCount == usdModel.Meshes.Count,
         $"materials={materialCount}, meshes={usdModel.Meshes.Count}");
-    Check("USD binds each mesh to its own material",
-        usdText.Contains("rel material:binding = </Materials/Mat_0000_00000000>"),
-        "mesh 0 binding");
+    Check("USD binds mesh by UV signature",
+        usdText.Contains("rel material:binding = </Materials/Mat_UV_") &&
+        usdText.Contains("def Material \"Mat_UV_"),
+        "UV-keyed material binding");
 
     // Multi-part model: 40 meshes must produce 40 distinct materials/bindings.
     BundleEntry multiEntry = reader.Entries[8];
@@ -564,9 +565,10 @@ WithFixture("VEH_118158_MS.BIN", reader =>
     string multiUsdPath = Path.Combine(objTemp, "file_0008.usd");
     UsdSummary multiSummary = UsdExporter.ExportFile(multiUsdPath, multiModel);
     string multiUsdText = File.ReadAllText(multiUsdPath);
-    int multiMaterials = System.Text.RegularExpressions.Regex.Matches(multiUsdText, "def Material \"Mat_").Count;
-    Check("USD multi-part materials", multiSummary.Meshes == 40 && multiMaterials == 40,
-        $"meshes={multiSummary.Meshes}, materials={multiMaterials}");
+    int multiMaterials = System.Text.RegularExpressions.Regex.Matches(multiUsdText, "def Material \"Mat_UV_").Count;
+    int distinctUvSignatures = multiModel.Meshes.Select(UsdExporter.UvSignature).Distinct(StringComparer.Ordinal).Count();
+    Check("USD shares materials for identical UVs", multiSummary.Meshes == 40 && multiMaterials == distinctUvSignatures,
+        $"meshes={multiSummary.Meshes}, materials={multiMaterials}, distinctUv={distinctUvSignatures}");
 });
 
 // Synthetic model helpers.

@@ -1,5 +1,6 @@
 ﻿using System.Globalization;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace BundleFormat.Models;
@@ -38,31 +39,73 @@ public static class UsdExporter
         writer.Write("    upAxis = \"Z\"\n");
         writer.Write(")\n\n");
 
-        WriteMaterials(writer, model);
+        (string[] materialNames, List<(string Key, string Name)> materials) = BuildMaterials(model);
+        WriteMaterials(writer, materials);
         writer.Write("def Xform \"Model\"\n");
         writer.Write("{\n");
 
         for (int meshIndex = 0; meshIndex < model.Meshes.Count; meshIndex++)
         {
             NfsMesh mesh = model.Meshes[meshIndex];
-            WriteMesh(writer, mesh, meshIndex);
+            WriteMesh(writer, mesh, meshIndex, materialNames[meshIndex]);
         }
 
         writer.Write("}\n");
         writer.Flush();
     }
 
-    private static void WriteMaterials(TextWriter writer, NfsModel model)
+    /// <summary>Stable signature of all UV channels of a mesh. Meshes with identical UVs
+    /// share one material; meshes with different UVs get different materials.</summary>
+    public static string UvSignature(NfsMesh mesh)
+    {
+        if (mesh == null) return "EMPTY";
+        using var buffer = new MemoryStream();
+        foreach (NfsVertex vertex in mesh.Vertices)
+        {
+            WriteUvTo(buffer, vertex.Uv0);
+            WriteUvTo(buffer, vertex.Uv1);
+            WriteUvTo(buffer, vertex.Uv2);
+        }
+        byte[] hash = SHA256.HashData(buffer.ToArray());
+        return Convert.ToHexString(hash, 0, 8);
+    }
+
+    private static void WriteUvTo(Stream stream, NfsVector2 uv)
+    {
+        byte[] bytes = BitConverter.GetBytes(uv.X);
+        stream.Write(bytes, 0, bytes.Length);
+        bytes = BitConverter.GetBytes(uv.Y);
+        stream.Write(bytes, 0, bytes.Length);
+    }
+
+    private static (string[] PerMesh, List<(string Key, string Name)> Unique) BuildMaterials(NfsModel model)
+    {
+        var perMesh = new string[model.Meshes.Count];
+        var unique = new List<(string, string)>();
+        var byKey = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (int i = 0; i < model.Meshes.Count; i++)
+        {
+            string key = UvSignature(model.Meshes[i]);
+            if (!byKey.TryGetValue(key, out string name))
+            {
+                name = "Mat_UV_" + key;
+                byKey[key] = name;
+                unique.Add((key, name));
+            }
+            perMesh[i] = name;
+        }
+        return (perMesh, unique);
+    }
+
+    private static void WriteMaterials(TextWriter writer, List<(string Key, string Name)> materials)
     {
         writer.Write("def Scope \"Materials\"\n");
         writer.Write("{\n");
-        for (int meshIndex = 0; meshIndex < model.Meshes.Count; meshIndex++)
+        for (int i = 0; i < materials.Count; i++)
         {
-            // One material per geometry part, even when the mesh header has no usable
-            // material hash (all hashes are 0 in NFS bundles).
-            uint hash = model.Meshes[meshIndex].MaterialHash;
-            string matName = MaterialName(meshIndex, hash);
-            (float r, float g, float b) = ColorForHash(hash, meshIndex);
+            (string key, string matName) = materials[i];
+            uint hash = (uint)key.GetHashCode(StringComparison.Ordinal);
+            (float r, float g, float b) = ColorForHash(hash, i);
             writer.Write("    def Material \"" + matName + "\"\n");
             writer.Write("    {\n");
             writer.Write("        token outputs:surface.connect = </Materials/" + matName + "/PreviewSurface.outputs:surface>\n");
@@ -79,10 +122,9 @@ public static class UsdExporter
         writer.Write("}\n\n");
     }
 
-    private static void WriteMesh(TextWriter writer, NfsMesh mesh, int meshIndex)
+    private static void WriteMesh(TextWriter writer, NfsMesh mesh, int meshIndex, string matName)
     {
         string xformName = "Mesh_" + meshIndex.ToString(CultureInfo.InvariantCulture);
-        string matName = MaterialName(meshIndex, mesh.MaterialHash);
 
         writer.Write("    def Xform \"" + xformName + "\"\n");
         writer.Write("    {\n");
@@ -170,10 +212,10 @@ public static class UsdExporter
     private static bool HasUvChannel(NfsMesh mesh, int uvIndex)
     {
         // Channel presence follows stride layouts parsed in NfsModel.ReadVertices.
-        // 48/52/60 are known from NFSStructuresDef.h; 36/56/64 are credible scan-derived layouts.
+        // 48/52/60 are known from NFSStructuresDef.h; 24/28/32/36/44/56/64 are credible scan-derived layouts.
         bool strideHasChannel = uvIndex switch
         {
-            0 => mesh.VertexSize == 36 || mesh.VertexSize == 48 || mesh.VertexSize == 52 || mesh.VertexSize == 56 || mesh.VertexSize == 60 || mesh.VertexSize == 64,
+            0 => mesh.VertexSize == 24 || mesh.VertexSize == 28 || mesh.VertexSize == 32 || mesh.VertexSize == 36 || mesh.VertexSize == 44 || mesh.VertexSize == 48 || mesh.VertexSize == 52 || mesh.VertexSize == 56 || mesh.VertexSize == 60 || mesh.VertexSize == 64,
             1 => mesh.VertexSize == 36 || mesh.VertexSize == 48 || mesh.VertexSize == 52 || mesh.VertexSize == 60 || mesh.VertexSize == 64,
             2 => mesh.VertexSize == 52,
             _ => false
@@ -187,10 +229,6 @@ public static class UsdExporter
         }
         return false;
     }
-
-    private static string MaterialName(int meshIndex, uint hash) =>
-        "Mat_" + meshIndex.ToString("D4", CultureInfo.InvariantCulture) + "_" +
-        hash.ToString("X8", CultureInfo.InvariantCulture);
 
     private static (float r, float g, float b) ColorForHash(uint hash, int meshIndex)
     {
