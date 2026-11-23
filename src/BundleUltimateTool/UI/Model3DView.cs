@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Numerics;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
 using BundleFormat.Models;
 using BundleUltimateTool.Rendering;
@@ -13,18 +16,32 @@ namespace BundleUltimateTool.UI;
 
 /// <summary>
 /// WinForms DX12 viewport for NFS models. Camera/drag/gizmo semantics ported from
-/// PrototypeUltimateTool Model3DViewer (WPF removed; plain NFS model source).
+/// PrototypeUltimateTool Model3DViewer; render scheduler ported from PrototypeUltimateTool
+/// Model3DViewer.cs (dedicated 60 FPS render thread, high-resolution waitable timer).
 /// </summary>
 internal sealed class Model3DView : Control
 {
-    private readonly Timer _renderTimer = new() { Interval = 33 };
-    private Dx12MeshRenderer _renderer;
+    // --- Scheduler (Prototype Model3DViewer.cs:75-99,712-728,1436-1437,3265-3989) ---
+    private readonly object _dx12FrameRequestSync = new();
+    private readonly ManualResetEvent _dx12RenderStopEvent = new(false);
+    private Dx12RenderFrameRequest _dx12LatestFrameRequest;
+    private Thread _dx12RenderThread;
+    private IntPtr _dx12RenderHwnd;
+    private int _dx12InitialRenderWidth;
+    private int _dx12InitialRenderHeight;
+    private readonly System.Windows.Forms.Timer _dx12RenderTimer = new() { Interval = 16 };
+    private volatile Dx12MeshRenderer _dx12Renderer;
+    private bool _dx12RendererActive;
+    private double _dx12SceneCollectionMilliseconds;
+    private double _dx12RenderLoopIntervalMilliseconds;
+    private double _dx12RenderWaitMilliseconds;
+    private double _dx12RenderWaitOvershootMilliseconds;
+    private DateTime _lastStatsUpdateUtc = DateTime.MinValue;
+
     private Dx12SceneMesh[] _meshes = Array.Empty<Dx12SceneMesh>();
     private string _initError;
     private readonly ViewerDragState _drag = new();
     private Point _lastMouse;
-    private bool _dirty;
-    private bool _loggedRender;
     private double _yaw = -45.0;
     private double _pitch = 15.0;
     private double _distance = 4.0;
@@ -39,7 +56,43 @@ internal sealed class Model3DView : Control
     private bool _hasCameraView;
     private readonly Panel _gizmoOverlay;
     private readonly Label _statsOverlay;
-    private DateTime _lastStatsUpdateUtc = DateTime.MinValue;
+
+    private sealed class Dx12RenderFrameRequest
+    {
+        public Dx12SceneMesh[] Meshes;
+        public Dx12ShadingMode ShadingMode;
+        public double Yaw;
+        public double Pitch;
+        public double Distance;
+        public double TargetX;
+        public double TargetY;
+        public double TargetZ;
+        public double BoundingRadius;
+        public int Width;
+        public int Height;
+    }
+
+    [DllImport("winmm.dll", ExactSpelling = true)]
+    private static extern uint timeBeginPeriod(uint uMilliseconds);
+    [DllImport("winmm.dll", ExactSpelling = true)]
+    private static extern uint timeEndPeriod(uint uMilliseconds);
+
+    // High-resolution waitable timer support (Windows 10 1803+). If unavailable,
+    // the render loop falls back to a timed wait with a short final spin interval.
+    private const uint CreateWaitableTimerHighResolution = 0x00000002;
+    private const uint TimerAllAccess = 0x001F0003;
+    private const uint WaitObject0 = 0x00000000;
+    private const uint WaitFailed = 0xFFFFFFFF;
+    private const uint Infinite = 0xFFFFFFFF;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr CreateWaitableTimerExW(IntPtr lpTimerAttributes, string lpTimerName, uint dwFlags, uint dwDesiredAccess);
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern bool SetWaitableTimer(IntPtr hTimer, ref long lpDueTime, int lPeriod, IntPtr pfnCompletionRoutine, IntPtr lpArgToCompletionRoutine, bool fResume);
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern uint WaitForMultipleObjects(uint nCount, IntPtr[] lpHandles, bool bWaitAll, uint dwMilliseconds);
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
 
     internal Model3DView()
     {
@@ -72,12 +125,8 @@ internal sealed class Model3DView : Control
         };
         Controls.Add(_statsOverlay);
 
-        _renderTimer.Tick += (s, e) =>
-        {
-            if (!_dirty) { _renderTimer.Stop(); return; }
-            _dirty = false;
-            RenderFrame();
-        };
+        // Prototype Model3DViewer.cs:1434-1437 - timer snapshots frame state only; DX12 work on render thread.
+        _dx12RenderTimer.Tick += (sender, args) => RenderDx12Frame();
     }
 
     [Browsable(false)]
@@ -130,7 +179,6 @@ internal sealed class Model3DView : Control
     {
         _meshes = Array.Empty<Dx12SceneMesh>();
         _hasCameraView = false;
-        _renderer?.EnsureScene(_meshes);
         _statsOverlay.Visible = false;
         RequestRender();
     }
@@ -144,9 +192,9 @@ internal sealed class Model3DView : Control
 
     internal void RequestRender()
     {
-        if (_initError != null) return;
-        _dirty = true;
-        if (!_renderTimer.Enabled) _renderTimer.Start();
+        // Continuous 16ms timer publishes latest frame snapshot; nothing else needed.
+        if (_initError == null && !_dx12RenderTimer.Enabled && _dx12RendererActive)
+            _dx12RenderTimer.Start();
     }
 
     private void FitCameraToBounds(bool resetOrientation)
@@ -189,57 +237,298 @@ internal sealed class Model3DView : Control
         _hasCameraView = true;
     }
 
-    private void RenderFrame()
+    // --- Initialization (Prototype Model3DViewer.cs:3265-3288) ---
+    private void InitializeDx12Renderer()
     {
-        if (_renderer == null || IsDisposed) return;
+        if (IsDisposed || !IsHandleCreated) return;
+        if (_dx12Renderer != null || (_dx12RenderThread != null && _dx12RenderThread.IsAlive)) return;
+
         try
         {
-            _renderer.Render(_meshes, ShadingMode, _yaw, _pitch, _distance,
-                _targetX, _targetY, _targetZ, _boundingRadius);
-            UpdateStatsOverlay();
-            if (!_loggedRender)
-            {
-                _loggedRender = true;
-                ApplicationLog.Write("DX12_RENDER_OK",
-                    $"vertices={_renderer.VertexCount}, triangles={_renderer.TriangleCount}, " +
-                    $"shading={ShadingMode}, distance={_distance:F2}, radius={_boundingRadius:F2}");
-            }
+            _dx12InitialRenderWidth = Math.Max(1, ClientSize.Width);
+            _dx12InitialRenderHeight = Math.Max(1, ClientSize.Height);
+            _dx12RenderHwnd = Handle;
+            // DX12 device/swap-chain and shader/PSO setup can take a noticeable amount of time.
+            // Run initialization on the same worker that will own Render/Resize/Dispose so the UI
+            // stays responsive and no D3D12 object is used concurrently from multiple threads.
+            _dx12RendererActive = true;
+            _initError = null;
+            PositionOverlays();
+            StartDx12RenderThread();
+            _dx12RenderTimer.Start();
         }
         catch (Exception ex)
         {
-            _initError = "DX12 render failed: " + ex.Message;
-            ApplicationLog.Write("DX12_RENDER_FAILED", _initError, ex);
-            _renderTimer.Stop();
+            _initError = "Direct3D 12 unavailable: " + ex.Message;
+            ApplicationLog.Write("DX12_INIT_FAILED", _initError, ex);
             Invalidate();
         }
     }
 
+    // --- Thread start (Prototype Model3DViewer.cs:3753-3766) ---
+    private void StartDx12RenderThread()
+    {
+        if (_dx12RenderThread != null && _dx12RenderThread.IsAlive) return;
+        _dx12RenderStopEvent.Reset();
+        _dx12RenderThread = new Thread(Dx12RenderThreadMain)
+        {
+            IsBackground = true,
+            Name = "BundleUltimateTool DX12 Render"
+        };
+        // Keep STA-compatible (matches Prototype; safe for future WPF-interop/clipboard usage).
+        _dx12RenderThread.SetApartmentState(ApartmentState.STA);
+        _dx12RenderThread.Start();
+    }
+
+    // --- Frame snapshot publish (Prototype Model3DViewer.cs:3768-3819) ---
+    private void RenderDx12Frame()
+    {
+        if (!_dx12RendererActive || _dx12RenderHwnd == IntPtr.Zero ||
+            ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            return;
+
+        try
+        {
+            long sceneBuildStart = Stopwatch.GetTimestamp();
+            // Plain-array scene: no WPF collection freeze required; snapshot is the array reference.
+            Dx12SceneMesh[] meshesSnapshot = _meshes;
+            _dx12SceneCollectionMilliseconds = (Stopwatch.GetTimestamp() - sceneBuildStart) * 1000.0 / Stopwatch.Frequency;
+
+            var frame = new Dx12RenderFrameRequest
+            {
+                Meshes = meshesSnapshot,
+                ShadingMode = ShadingMode,
+                Yaw = _yaw,
+                Pitch = _pitch,
+                Distance = _distance,
+                TargetX = _targetX,
+                TargetY = _targetY,
+                TargetZ = _targetZ,
+                BoundingRadius = _boundingRadius,
+                Width = ClientSize.Width,
+                Height = ClientSize.Height
+            };
+            lock (_dx12FrameRequestSync)
+                _dx12LatestFrameRequest = frame;
+
+            if ((DateTime.UtcNow - _lastStatsUpdateUtc).TotalMilliseconds >= 250)
+            {
+                UpdateStatsOverlay();
+                _lastStatsUpdateUtc = DateTime.UtcNow;
+            }
+        }
+        catch (Exception ex)
+        {
+            _dx12RenderTimer.Stop();
+            ApplicationLog.Write("DX12_FRAME_SNAPSHOT_FAILED", ex.Message, ex);
+        }
+    }
+
+    // --- Render thread (Prototype Model3DViewer.cs:3821-3931) ---
+    private void Dx12RenderThreadMain()
+    {
+        Dx12MeshRenderer renderer = null;
+        bool timerResolutionRequested = false;
+        IntPtr waitableTimer = IntPtr.Zero;
+        int renderWidth = Math.Max(1, _dx12InitialRenderWidth);
+        int renderHeight = Math.Max(1, _dx12InitialRenderHeight);
+        try
+        {
+            try { timerResolutionRequested = timeBeginPeriod(1) == 0; }
+            catch { timerResolutionRequested = false; }
+
+            // Prefer a true high-resolution timer over repeated relative 16 ms waits.
+            // A relative WaitOne(16) accumulates scheduler oversleep and was producing
+            // a ~40 Hz loop even though each individual measured interval often looked ~17 ms.
+            try
+            {
+                waitableTimer = CreateWaitableTimerExW(IntPtr.Zero, null, CreateWaitableTimerHighResolution, TimerAllAccess);
+                if (waitableTimer == IntPtr.Zero)
+                    waitableTimer = CreateWaitableTimerExW(IntPtr.Zero, null, 0, TimerAllAccess);
+            }
+            catch { waitableTimer = IntPtr.Zero; }
+
+            if (_dx12RenderHwnd == IntPtr.Zero)
+                throw new InvalidOperationException("DX12 render thread started without a valid panel HWND.");
+            renderer = new Dx12MeshRenderer(_dx12RenderHwnd, renderWidth, renderHeight);
+            _dx12Renderer = renderer;
+
+            const double TargetFramesPerSecond = 60.0;
+            long framePeriodTicks = Math.Max(1L, (long)Math.Round(Stopwatch.Frequency / TargetFramesPerSecond));
+            long nextFrameDeadlineTicks = Stopwatch.GetTimestamp();
+            long previousLoopStartTicks = 0;
+            IntPtr[] waitHandles = waitableTimer != IntPtr.Zero
+                ? new[] { _dx12RenderStopEvent.SafeWaitHandle.DangerousGetHandle(), waitableTimer }
+                : null;
+
+            while (!_dx12RenderStopEvent.WaitOne(0))
+            {
+                long loopStartTicks = Stopwatch.GetTimestamp();
+                if (previousLoopStartTicks != 0)
+                {
+                    Volatile.Write(ref _dx12RenderLoopIntervalMilliseconds,
+                        (loopStartTicks - previousLoopStartTicks) * 1000.0 / Stopwatch.Frequency);
+                }
+                previousLoopStartTicks = loopStartTicks;
+
+                Dx12RenderFrameRequest frame;
+                lock (_dx12FrameRequestSync)
+                    frame = _dx12LatestFrameRequest;
+
+                if (frame != null && frame.Width > 0 && frame.Height > 0)
+                {
+                    if (frame.Width != renderWidth || frame.Height != renderHeight)
+                    {
+                        renderer.Resize(frame.Width, frame.Height);
+                        renderWidth = frame.Width;
+                        renderHeight = frame.Height;
+                    }
+
+                    renderer.Render(frame.Meshes, frame.ShadingMode,
+                        frame.Yaw, frame.Pitch, frame.Distance,
+                        frame.TargetX, frame.TargetY, frame.TargetZ, frame.BoundingRadius);
+                }
+
+                // Pace against an absolute Stopwatch deadline. This avoids adding the render
+                // work duration to a fixed 16 ms wait and measures timer overshoot directly.
+                nextFrameDeadlineTicks += framePeriodTicks;
+                long nowTicks = Stopwatch.GetTimestamp();
+                if (nextFrameDeadlineTicks <= nowTicks)
+                    nextFrameDeadlineTicks = nowTicks + framePeriodTicks; // Drop a missed deadline; never busy-loop to catch up.
+
+                if (!WaitForDx12FrameDeadline(waitableTimer, waitHandles, nextFrameDeadlineTicks))
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            ApplicationLog.Write(_dx12Renderer == null ? "DX12_INIT_FAILED" : "DX12_RENDER_THREAD_FAILED", ex.Message, ex);
+            try
+            {
+                if (!IsDisposed && IsHandleCreated)
+                    BeginInvoke((Action)(() => HandleDx12RenderThreadFailure(ex.Message, _dx12Renderer == null)));
+            }
+            catch { }
+        }
+        finally
+        {
+            if (waitableTimer != IntPtr.Zero)
+            {
+                try { CloseHandle(waitableTimer); } catch { }
+            }
+            if (timerResolutionRequested)
+            {
+                try { timeEndPeriod(1); } catch { }
+            }
+            if (renderer != null)
+            {
+                try { renderer.Dispose(); }
+                catch (Exception ex) { ApplicationLog.Write("DX12_RENDER_THREAD_DISPOSE_FAILED", ex.Message, ex); }
+            }
+            if (ReferenceEquals(_dx12Renderer, renderer))
+                _dx12Renderer = null;
+        }
+    }
+
+    // --- Deadline wait (Prototype Model3DViewer.cs:3933-3989) ---
+    private bool WaitForDx12FrameDeadline(IntPtr waitableTimer, IntPtr[] waitHandles, long deadlineTicks)
+    {
+        long waitStartTicks = Stopwatch.GetTimestamp();
+        long remainingTicks = deadlineTicks - waitStartTicks;
+        if (remainingTicks > 0)
+        {
+            if (waitableTimer != IntPtr.Zero && waitHandles != null)
+            {
+                long dueTime100ns = -Math.Max(1L, (long)Math.Ceiling(
+                    remainingTicks * (10_000_000.0 / Stopwatch.Frequency)));
+                if (SetWaitableTimer(waitableTimer, ref dueTime100ns, 0, IntPtr.Zero, IntPtr.Zero, false))
+                {
+                    uint waitResult = WaitForMultipleObjects((uint)waitHandles.Length, waitHandles, false, Infinite);
+                    if (waitResult == WaitObject0) return false; // Stop event.
+                    if (waitResult != WaitObject0 + 1 && waitResult != WaitFailed)
+                    {
+                        // Unexpected wait result: fall back below rather than terminate rendering.
+                    }
+                    else if (waitResult == WaitObject0 + 1)
+                    {
+                        long wakeTicks = Stopwatch.GetTimestamp();
+                        Volatile.Write(ref _dx12RenderWaitMilliseconds,
+                            (wakeTicks - waitStartTicks) * 1000.0 / Stopwatch.Frequency);
+                        Volatile.Write(ref _dx12RenderWaitOvershootMilliseconds,
+                            Math.Max(0.0, (wakeTicks - deadlineTicks) * 1000.0 / Stopwatch.Frequency));
+                        return !_dx12RenderStopEvent.WaitOne(0);
+                    }
+                }
+            }
+
+            // Fallback path for systems without the high-resolution waitable timer.
+            // Sleep most of the remaining duration, then spin only for the final <1 ms.
+            while (!_dx12RenderStopEvent.WaitOne(0))
+            {
+                remainingTicks = deadlineTicks - Stopwatch.GetTimestamp();
+                if (remainingTicks <= 0) break;
+                double remainingMs = remainingTicks * 1000.0 / Stopwatch.Frequency;
+                if (remainingMs > 1.0)
+                {
+                    int sleepMs = Math.Max(1, (int)Math.Floor(remainingMs - 0.5));
+                    if (_dx12RenderStopEvent.WaitOne(sleepMs)) return false;
+                }
+                else
+                {
+                    Thread.SpinWait(32);
+                }
+            }
+            if (_dx12RenderStopEvent.WaitOne(0)) return false;
+        }
+
+        long wakeTimeTicks = Stopwatch.GetTimestamp();
+        Volatile.Write(ref _dx12RenderWaitMilliseconds,
+            Math.Max(0.0, (wakeTimeTicks - waitStartTicks) * 1000.0 / Stopwatch.Frequency));
+        Volatile.Write(ref _dx12RenderWaitOvershootMilliseconds,
+            Math.Max(0.0, (wakeTimeTicks - deadlineTicks) * 1000.0 / Stopwatch.Frequency));
+        return !_dx12RenderStopEvent.WaitOne(0);
+    }
+
+    private void HandleDx12RenderThreadFailure(string message, bool initializationFailure)
+    {
+        if (IsDisposed) return;
+        _dx12RendererActive = false;
+        _dx12RenderTimer.Stop();
+        _initError = initializationFailure
+            ? "Direct3D 12 unavailable: " + message
+            : "DX12 render failed: " + message;
+        _statsOverlay.Visible = false;
+        Invalidate();
+    }
+
     private void UpdateStatsOverlay()
     {
-        if (_renderer == null || _meshes.Length == 0) { _statsOverlay.Visible = false; return; }
-        DateTime now = DateTime.UtcNow;
-        if ((now - _lastStatsUpdateUtc).TotalMilliseconds < 100.0) return;
-        _lastStatsUpdateUtc = now;
+        Dx12MeshRenderer renderer = _dx12Renderer;
+        if (renderer == null || _meshes.Length == 0) { _statsOverlay.Visible = false; return; }
         var snapshot = new Dx12StatsSnapshot
         {
-            Fps = _renderer.Fps,
-            FrameTimeMilliseconds = _renderer.FrameTimeMilliseconds,
-            SubmittedFrameIntervalMilliseconds = _renderer.SubmittedFrameIntervalMilliseconds,
-            CpuRenderMilliseconds = _renderer.CpuRenderMilliseconds,
-            PresentAndSignalMilliseconds = _renderer.PresentAndSignalMilliseconds,
-            RenderCallRate = _renderer.RenderCallRate,
-            RenderCallCount = _renderer.RenderCallCount,
-            SubmittedFrameCount = _renderer.SubmittedFrameCount,
-            SkippedFrames = _renderer.SkippedFrames,
-            MsaaSampleCount = _renderer.MsaaSampleCount,
-            MeshCount = _renderer.MeshCount,
-            DrawCallCount = _renderer.DrawCallCount,
-            VertexCount = _renderer.VertexCount,
-            EdgeCount = _renderer.EdgeCount,
-            FaceCount = _renderer.FaceCount,
-            TriangleCount = _renderer.TriangleCount,
-            TextureMemoryBytes = _renderer.TextureMemoryBytes,
-            Mode = ShadingMode.ToString()
+            Fps = renderer.Fps,
+            FrameTimeMilliseconds = renderer.FrameTimeMilliseconds,
+            SubmittedFrameIntervalMilliseconds = renderer.SubmittedFrameIntervalMilliseconds,
+            CpuRenderMilliseconds = renderer.CpuRenderMilliseconds,
+            PresentAndSignalMilliseconds = renderer.PresentAndSignalMilliseconds,
+            RenderCallRate = renderer.RenderCallRate,
+            RenderCallCount = renderer.RenderCallCount,
+            SubmittedFrameCount = renderer.SubmittedFrameCount,
+            SkippedFrames = renderer.SkippedFrames,
+            MsaaSampleCount = renderer.MsaaSampleCount,
+            MeshCount = renderer.MeshCount,
+            DrawCallCount = renderer.DrawCallCount,
+            VertexCount = renderer.VertexCount,
+            EdgeCount = renderer.EdgeCount,
+            FaceCount = renderer.FaceCount,
+            TriangleCount = renderer.TriangleCount,
+            TextureMemoryBytes = renderer.TextureMemoryBytes,
+            Mode = ShadingMode.ToString(),
+            SceneCollectionMilliseconds = _dx12SceneCollectionMilliseconds,
+            RenderLoopIntervalMilliseconds = Volatile.Read(ref _dx12RenderLoopIntervalMilliseconds),
+            RenderWaitMilliseconds = Volatile.Read(ref _dx12RenderWaitMilliseconds),
+            RenderWaitOvershootMilliseconds = Volatile.Read(ref _dx12RenderWaitOvershootMilliseconds)
         };
         _statsOverlay.Text = Dx12StatsFormatter.Format(snapshot);
         _statsOverlay.Visible = true;
@@ -283,25 +572,13 @@ internal sealed class Model3DView : Control
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        if (_renderer != null) return;
-        try
-        {
-            _renderer = new Dx12MeshRenderer(Handle, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
-            ApplicationLog.Write("DX12_INIT_OK", $"device created, {ClientSize.Width}x{ClientSize.Height}");
-        }
-        catch (Exception ex)
-        {
-            _initError = "Direct3D 12 unavailable: " + ex.Message;
-            ApplicationLog.Write("DX12_INIT_FAILED", _initError, ex);
-        }
-        RequestRender();
+        InitializeDx12Renderer();
     }
 
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
         PositionOverlays();
-        _renderer?.Resize(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
         RequestRender();
     }
 
@@ -372,7 +649,7 @@ internal sealed class Model3DView : Control
     protected override void OnPaintBackground(PaintEventArgs pevent)
     {
         // DX12 owns the client area; avoid GDI background erase flicker.
-        if (_renderer != null && _initError == null) return;
+        if (_dx12RendererActive && _initError == null) return;
         base.OnPaintBackground(pevent);
     }
 
@@ -380,10 +657,28 @@ internal sealed class Model3DView : Control
     {
         if (disposing)
         {
-            _renderTimer.Stop();
-            _renderTimer.Dispose();
-            _renderer?.Dispose();
-            _renderer = null;
+            _dx12RenderTimer.Stop();
+            _dx12RenderTimer.Dispose();
+            _dx12RenderStopEvent.Set();
+            Thread renderThread = _dx12RenderThread;
+            bool joined = true;
+            if (renderThread != null && renderThread.IsAlive && renderThread != Thread.CurrentThread)
+            {
+                // The render thread owns all post-initialization DX12 calls and disposes the renderer on exit.
+                // Do not dispose resources concurrently with its command submission.
+                joined = renderThread.Join(1500);
+                if (!joined)
+                    ApplicationLog.Write("DX12_RENDER_THREAD_STOP_TIMEOUT",
+                        "Render thread did not stop within 1500 ms; it will finish disposal in the background.");
+            }
+            else if (_dx12Renderer != null)
+            {
+                try { _dx12Renderer.Dispose(); }
+                catch (Exception ex) { ApplicationLog.Write("DX12_RENDER_DISPOSE_FAILED", ex.Message, ex); }
+                _dx12Renderer = null;
+            }
+            if (joined)
+                _dx12RenderStopEvent.Dispose();
         }
         base.Dispose(disposing);
     }
