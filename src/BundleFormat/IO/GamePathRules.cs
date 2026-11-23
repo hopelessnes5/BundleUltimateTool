@@ -27,6 +27,15 @@ public static class GamePathRules
         ".bundle", ".bndl", ".bin", ".nfs", ".dds", ".obj", ".mtl", ".txt", ".xml", ".ini"
     };
 
+    public static uint? ParseVehId(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName)) return null;
+        string name = Path.GetFileName(fileName);
+        if (!name.StartsWith("VEH_", StringComparison.OrdinalIgnoreCase)) return null;
+        string digits = new string(name.Skip(4).TakeWhile(char.IsDigit).ToArray());
+        return digits.Length > 0 && uint.TryParse(digits, out uint id) ? id : null;
+    }
+
     public static bool IsRelevantExtension(string extension)
     {
         if (string.IsNullOrWhiteSpace(extension)) return false;

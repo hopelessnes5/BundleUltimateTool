@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
@@ -318,12 +319,16 @@ namespace BundleUltimateTool
                 {
                     TreeNode parent = GetOrCreateDirectoryNodes(document.RelativePath, dirNodes, expanded);
                     string name = Path.GetFileName(document.Path);
+                    string vehicleName = GetVehicleNameForBundle(document);
+                    string label = string.IsNullOrWhiteSpace(vehicleName) ? name : name + " — " + vehicleName;
                     var bundleNode = new TreeNode(
                         string.Format(UiLocalization.TranslateId("tree.bundleRoot",
-                            "{0}", _uiLanguage), name))
+                            "{0}", _uiLanguage), label))
                     {
                         Tag = document,
-                        ToolTipText = document.Path,
+                        ToolTipText = string.IsNullOrWhiteSpace(vehicleName)
+                            ? document.Path
+                            : document.Path + Environment.NewLine + vehicleName,
                         ImageIndex = TreeIcons.File
                     };
                     // Do NOT touch document.Entries here: that would load and cache every
@@ -671,9 +676,16 @@ namespace BundleUltimateTool
                 fileInfo = TryGetFileInfo(owner, selected, out _);
             }
 
-            propGrid.SelectedObject = view == null
-                ? null
-                : new BundleEntryProperties(selected, owner.Path, texture, model, fileInfo);
+            object selectedObject = null;
+            if (view != null)
+            {
+                var properties = new BundleEntryProperties(selected, owner.Path, texture, model, fileInfo);
+                string vehicleName = GetVehicleNameForBundle(owner);
+                selectedObject = string.IsNullOrWhiteSpace(vehicleName)
+                    ? properties
+                    : new VehicleNamedPropertyView(properties, vehicleName);
+            }
+            propGrid.SelectedObject = selectedObject;
             UpdateWorkspaceState();
             if (model != null)
             {
@@ -686,6 +698,14 @@ namespace BundleUltimateTool
                 SetPreviewMode(false);
                 UpdatePreview(texture, error, selected != null);
             }
+        }
+
+        private string GetVehicleNameForBundle(BundleDocument document)
+        {
+            if (document == null || _vehicleNames == null || _vehicleNames.Count == 0) return null;
+            uint? vehId = VehicleNameResolver.ParseVehId(Path.GetFileName(document.Path));
+            if (!vehId.HasValue) return null;
+            return _vehicleNames.TryGetValue(vehId.Value, out string name) ? name : null;
         }
 
         private void RefreshTypeFilterOptions()
@@ -791,6 +811,54 @@ namespace BundleUltimateTool
             int available = Math.Max(80, statusStrip.ClientSize.Width - statusStateLabel.Width -
                 (statusProgress != null && statusProgress.Visible ? statusProgress.Width : 0) - 24);
             statusPathLabel.Text = FitStatusText(fullPath, statusPathLabel.Font, available);
+        }
+    }
+
+    internal sealed class VehicleNamedPropertyView : ICustomTypeDescriptor
+    {
+        private readonly object _inner;
+        private readonly string _vehicleName;
+
+        internal VehicleNamedPropertyView(object inner, string vehicleName)
+        {
+            _inner = inner;
+            _vehicleName = vehicleName ?? "—";
+        }
+
+        public AttributeCollection GetAttributes() => TypeDescriptor.GetAttributes(_inner, true);
+        public string GetClassName() => TypeDescriptor.GetClassName(_inner, true);
+        public string GetComponentName() => TypeDescriptor.GetComponentName(_inner, true);
+        public TypeConverter GetConverter() => TypeDescriptor.GetConverter(_inner, true);
+        public EventDescriptor GetDefaultEvent() => TypeDescriptor.GetDefaultEvent(_inner, true);
+        public PropertyDescriptor GetDefaultProperty() => TypeDescriptor.GetDefaultProperty(_inner, true);
+        public object GetEditor(Type editorBaseType) => TypeDescriptor.GetEditor(_inner, editorBaseType, true);
+        public EventDescriptorCollection GetEvents(Attribute[] attributes) => TypeDescriptor.GetEvents(_inner, attributes, true);
+        public EventDescriptorCollection GetEvents() => TypeDescriptor.GetEvents(_inner, true);
+        public object GetPropertyOwner(PropertyDescriptor pd) => pd is VehicleNamePropertyDescriptor ? this : _inner;
+
+        public PropertyDescriptorCollection GetProperties() => GetProperties(Array.Empty<Attribute>());
+        public PropertyDescriptorCollection GetProperties(Attribute[] attributes)
+        {
+            PropertyDescriptorCollection inner = TypeDescriptor.GetProperties(_inner, attributes, true);
+            var list = new PropertyDescriptor[inner.Count + 1];
+            list[0] = new VehicleNamePropertyDescriptor(_vehicleName);
+            for (int i = 0; i < inner.Count; i++) list[i + 1] = inner[i];
+            return new PropertyDescriptorCollection(list, true);
+        }
+
+        private sealed class VehicleNamePropertyDescriptor : PropertyDescriptor
+        {
+            private readonly string _value;
+            internal VehicleNamePropertyDescriptor(string value)
+                : base("Vehicle name", new Attribute[] { new DisplayNameAttribute("Vehicle name"), new CategoryAttribute("Vehicle") }) { _value = value; }
+            public override Type ComponentType => typeof(VehicleNamedPropertyView);
+            public override bool IsReadOnly => true;
+            public override Type PropertyType => typeof(string);
+            public override bool CanResetValue(object component) => false;
+            public override object GetValue(object component) => (component as VehicleNamedPropertyView)?._vehicleName ?? _value;
+            public override void ResetValue(object component) { }
+            public override void SetValue(object component, object value) { }
+            public override bool ShouldSerializeValue(object component) => false;
         }
     }
 }

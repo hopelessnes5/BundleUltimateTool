@@ -31,4 +31,7 @@ public sealed class GameFileProperties
 
     [DisplayName("Is folder")]
     public bool IsFolder => _entry.IsDirectory;
+
+    [DisplayName("Vehicle name")]
+    public string VehicleName => string.IsNullOrWhiteSpace(_entry.VehicleName) ? "—" : _entry.VehicleName;
 }

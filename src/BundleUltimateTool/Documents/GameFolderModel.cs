@@ -23,12 +23,21 @@ public sealed class GameFileEntry
     public bool IsDirectory { get; }
     public long Length { get; }
     public DateTime LastWriteTimeUtc { get; }
+    public string VehicleName { get; internal set; }
     public string Extension => IsDirectory ? string.Empty : GamePathRules.GetExtensionLabel(FullPath);
     public bool IsBundle => !IsDirectory && GamePathRules.IsBundleFile(FullPath);
 
-    public string DisplayText => IsDirectory
-        ? "[folder] " + Name
-        : Name + " | " + (Length / 1024.0).ToString("F1", CultureInfo.CurrentCulture) + " KB";
+    public string DisplayText
+    {
+        get
+        {
+            if (IsDirectory) return "[folder] " + Name;
+            string text = Name + " | " + (Length / 1024.0).ToString("F1", CultureInfo.CurrentCulture) + " KB";
+            if (!string.IsNullOrWhiteSpace(VehicleName))
+                text += " — " + VehicleName;
+            return text;
+        }
+    }
 }
 
 /// <summary>
@@ -42,6 +51,15 @@ public sealed class GameFolderModel
     public string CurrentRelativePath { get; private set; } = string.Empty;
     public IReadOnlyList<GameFileEntry> Items { get; private set; } = Array.Empty<GameFileEntry>();
     public IReadOnlyList<string> Diagnostics { get; private set; } = Array.Empty<string>();
+    private IReadOnlyDictionary<uint, string> _vehicleNames = new Dictionary<uint, string>();
+
+    public void SetVehicleNames(IReadOnlyDictionary<uint, string> names)
+    {
+        _vehicleNames = names ?? new Dictionary<uint, string>();
+        if (Items.Count == 0) return;
+        foreach (GameFileEntry entry in Items)
+            ApplyVehicleName(entry);
+    }
 
     public bool HasRoot => !string.IsNullOrEmpty(RootPath) && Directory.Exists(RootPath);
 
@@ -191,15 +209,30 @@ public sealed class GameFolderModel
             if (isDirectory)
             {
                 var info = new DirectoryInfo(fullPath);
-                return new GameFileEntry(info.Name, fullPath, true, 0, info.LastWriteTimeUtc);
+                GameFileEntry dir = new GameFileEntry(info.Name, fullPath, true, 0, info.LastWriteTimeUtc);
+                ApplyVehicleName(dir);
+                return dir;
             }
             var file = new FileInfo(fullPath);
-            return new GameFileEntry(file.Name, fullPath, false, file.Length, file.LastWriteTimeUtc);
+            GameFileEntry entry = new GameFileEntry(file.Name, fullPath, false, file.Length, file.LastWriteTimeUtc);
+            ApplyVehicleName(entry);
+            return entry;
         }
         catch (Exception)
         {
-            return new GameFileEntry(Path.GetFileName(fullPath), fullPath, isDirectory, 0, DateTime.MinValue);
+            GameFileEntry fallback = new GameFileEntry(Path.GetFileName(fullPath), fullPath, isDirectory, 0, DateTime.MinValue);
+            ApplyVehicleName(fallback);
+            return fallback;
         }
+    }
+
+    private void ApplyVehicleName(GameFileEntry entry)
+    {
+        if (entry == null || entry.IsDirectory) return;
+        uint? vehId = BundleFormat.IO.GamePathRules.ParseVehId(entry.Name);
+        if (!vehId.HasValue) return;
+        if (_vehicleNames.TryGetValue(vehId.Value, out string name))
+            entry.VehicleName = name;
     }
 
     private string RelativeToRoot(string fullPath)

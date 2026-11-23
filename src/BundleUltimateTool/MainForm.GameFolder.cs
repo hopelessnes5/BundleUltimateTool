@@ -17,6 +17,7 @@ namespace BundleUltimateTool
         private const int TextPreviewLimit = 256 * 1024;
         private const int HexPreviewLimit = 512;
         private readonly System.Windows.Forms.Timer _openBundleTimer = new System.Windows.Forms.Timer { Interval = 350 };
+        private IReadOnlyDictionary<uint, string> _vehicleNames = new Dictionary<uint, string>();
 
         private void InitializeGameFolderUi()
         {
@@ -131,6 +132,8 @@ namespace BundleUltimateTool
                 _archiveTypeHistogram = BuildOrLoadTypeHistogram(_gameFolderModel.RootPath, histogramSources, histogramIdentities);
                 ApplicationLog.Write("TYPE_HISTOGRAM_READY",
                     $"root='{_gameFolderModel.RootPath}', types={_archiveTypeHistogram.Counts.Count}, entries={_archiveTypeHistogram.TotalEntries}");
+                _vehicleNames = VehicleNameResolver.Build(_gameFolderModel.RootPath, System.Threading.CancellationToken.None);
+                _gameFolderModel.SetVehicleNames(_vehicleNames);
                 _document = _openDocuments.FirstOrDefault();
                 _compositeMode = true;
                 RefreshTypeFilterOptions();

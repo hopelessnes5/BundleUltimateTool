@@ -12,6 +12,8 @@ public sealed class NfsStringsTable
     public uint CharSize { get; private set; }
     public uint Count { get; private set; }
     public IReadOnlyList<string> Strings { get; private set; } = Array.Empty<string>();
+    public IReadOnlyList<uint> Ids { get; private set; } = Array.Empty<uint>();
+    public IReadOnlyDictionary<uint, int> IdToIndex { get; private set; } = new Dictionary<uint, int>();
     public IReadOnlyList<string> Diagnostics { get; private set; } = Array.Empty<string>();
 
     public static NfsStringsTable Parse(ReadOnlySpan<byte> data)
@@ -34,6 +36,19 @@ public sealed class NfsStringsTable
         if ((ulong)infosOffset + (ulong)infoBytes > (ulong)data.Length)
             throw new BundleFormatException(
                 $"STRINGS info table at {infosOffset} needs {infoBytes} byte(s), beyond data length {data.Length}.");
+
+        // Game STRINGS tables store a uint32 ID per string between the header and the
+        // (offset,length) info array. The original C++ reader ignored those IDs, but they
+        // are the keys used by VEHICLELIST and other tables. Older tables without an ID
+        // array fall back to the string index as ID.
+        bool hasIds = infosOffset >= 16 + count * 4 && data.Length >= 16 + count * 4;
+        var ids = new uint[count];
+        var idToIndex = new Dictionary<uint, int>();
+        for (uint i = 0; i < count; i++)
+        {
+            ids[i] = hasIds ? EndianReader.ReadUInt32(data, 16 + (int)i * 4, $"strings.id[{i}]") : i;
+            idToIndex[ids[i]] = (int)i;
+        }
 
         var strings = new string[count];
         var diagnostics = new List<string>();
@@ -71,6 +86,8 @@ public sealed class NfsStringsTable
             CharSize = charSize,
             Count = count,
             Strings = strings,
+            Ids = ids,
+            IdToIndex = idToIndex,
             Diagnostics = diagnostics
         };
     }

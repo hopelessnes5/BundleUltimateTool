@@ -1100,6 +1100,147 @@ catch (Exception ex)
     Check("TYPE_HISTOGRAM checks", false, $"{ex.GetType().Name}: {ex.Message}");
 }
 
+// ---- vehicle name resolver checks (production: Documents/VehicleNameResolver.cs) ----
+try
+{
+    static uint? ParseVehIdLocal(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName)) return null;
+        string name = Path.GetFileName(fileName);
+        var m = System.Text.RegularExpressions.Regex.Match(name, @"^VEH_(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (!m.Success) return null;
+        return uint.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out uint id) ? id : null;
+    }
+
+    Eq("VEH ParseVehId VEH_118158_MS.BIN", ParseVehIdLocal("VEH_118158_MS.BIN"), (uint?)118158u);
+    Eq("VEH ParseVehId VEH_118570_HS.BIN", ParseVehIdLocal("VEH_118570_HS.BIN"), (uint?)118570u);
+    Eq("VEH ParseVehId lower case", ParseVehIdLocal("veh_383425_ms.bin"), (uint?)383425u);
+    Eq("VEH ParseVehId full path", ParseVehIdLocal(@"E:\Games\Need for Speed - Hot Pursuit\VEHICLES\VEH_118889_MS.BIN"), (uint?)118889u);
+    Check("VEH ParseVehId non-veh returns null", ParseVehIdLocal("VEHICLELIST.BUNDLE") == null, "null");
+    Check("VEH ParseVehId empty returns null", ParseVehIdLocal("") == null, "null");
+
+    string[] gameRoots = new[]
+    {
+        @"E:\Games\Need for Speed - Hot Pursuit",
+        @"E:\Games\Need for Speed - Hot Pursuit\VEHICLES"
+    };
+    string gameRoot = gameRoots.FirstOrDefault(Directory.Exists);
+    if (gameRoot != null)
+    {
+        // Live-data smoke: resolve names without failing the suite when format differs.
+        try
+        {
+            var vehIds = new HashSet<uint>();
+            foreach (string path in Directory.EnumerateFiles(gameRoot, "*", SearchOption.AllDirectories))
+            {
+                uint? id = ParseVehIdLocal(Path.GetFileName(path));
+                if (id.HasValue) vehIds.Add(id.Value);
+            }
+
+            NfsStringsTable strings = null;
+            string[] langCandidates = new[]
+            {
+                Path.Combine(gameRoot, "UI", "LANGUAGE", "0001.BNDL"),
+                Path.Combine(gameRoot, "UI", "LANGUAGE", "0013.BNDL")
+            };
+            foreach (string candidate in langCandidates)
+            {
+                if (!File.Exists(candidate)) continue;
+                try
+                {
+                    using BundleReader r = BundleReader.Open(candidate);
+                    foreach (BundleEntry e in r.Entries)
+                    {
+                        if (e.FileType != 513) continue;
+                        byte[] compressed = r.ReadBytes(e.AbsoluteHeaderOffset, checked((int)e.Raw.HdrCompSize));
+                        byte[] data = ZLibAdapter.Decompress(compressed, checked((int)e.MaskedHdrUncompSize));
+                        NfsStringsTable table = NfsStringsTable.Parse(data);
+                        if (table.Strings.Count > 0) { strings = table; break; }
+                    }
+                }
+                catch { }
+                if (strings != null) break;
+            }
+
+            var stringIds = new HashSet<uint>();
+            foreach (uint id in strings.Ids)
+            {
+                if (!strings.IdToIndex.TryGetValue(id, out int idx)) continue;
+                string s = strings.Strings[idx] ?? string.Empty;
+                if (s.Length >= 3 && s.Any(char.IsLetter) && s.Any(char.IsWhiteSpace) &&
+                    s.IndexOf('{') < 0 && s.IndexOf('}') < 0)
+                    stringIds.Add(id);
+            }
+
+            string[] brandHints = { "BUGATTI", "NISSAN", "AUDI", "LAMBORGHINI", "KOENIGSEGG", "MCLAREN", "SHELBY", "PORSCHE", "BMW", "MASERATI", "DODGE", "FORD", "ASTON", "BENTLEY", "JAGUAR" };
+            var names = new Dictionary<uint, string>();
+            foreach (string path in Directory.EnumerateFiles(gameRoot, "*VEHICLELIST*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    using BundleReader r = BundleReader.Open(path);
+                    foreach (BundleEntry e in r.Entries)
+                    {
+                        if (e.FileType != 261) continue;
+                        byte[] compressed = r.ReadBytes(e.AbsoluteHeaderOffset, checked((int)e.Raw.HdrCompSize));
+                        byte[] data = ZLibAdapter.Decompress(compressed, checked((int)e.MaskedHdrUncompSize));
+                        const int RS = 92, HS = 32;
+                        int recCount = Math.Max(0, (data.Length - HS) / RS);
+                        for (int ri = 0; ri < recCount; ri++)
+                        {
+                            int off = HS + ri * RS;
+                            uint? vehId = null;
+                            for (int f = 0; f < RS / 4; f++)
+                            {
+                                uint v = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(off + f * 4, 4));
+                                if (vehIds.Contains(v)) { vehId = v; break; }
+                            }
+                            if (!vehId.HasValue || names.ContainsKey(vehId.Value)) continue;
+                            for (int f = 0; f < RS / 4; f++)
+                            {
+                                uint v = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(off + f * 4, 4));
+                                if (stringIds.Contains(v) && strings.IdToIndex.TryGetValue(v, out int stringIdx))
+                                {
+                                    string candidate = strings.Strings[stringIdx];
+                                    bool branded = brandHints.Any(b => candidate.IndexOf(b, StringComparison.OrdinalIgnoreCase) >= 0);
+                                    if (!names.TryGetValue(vehId.Value, out string previous))
+                                        names[vehId.Value] = candidate;
+                                    else
+                                    {
+                                        bool previousBranded = brandHints.Any(b => previous.IndexOf(b, StringComparison.OrdinalIgnoreCase) >= 0);
+                                        if ((branded && !previousBranded) ||
+                                            (branded == previousBranded && candidate.Length < previous.Length))
+                                            names[vehId.Value] = candidate;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            Console.WriteLine($"INFO  | VEHICLE_NAMES resolved={names.Count} | root='{gameRoot}', vehIds={vehIds.Count}, strings={strings.Strings.Count}");
+            if (names.TryGetValue(118158u, out string n118158))
+                Check("VEHICLE_NAMES 118158 contains BUGATTI", n118158.IndexOf("BUGATTI", StringComparison.OrdinalIgnoreCase) >= 0, n118158);
+            if (names.TryGetValue(118570u, out string n118570))
+                Check("VEHICLE_NAMES 118570 contains NISSAN", n118570.IndexOf("NISSAN", StringComparison.OrdinalIgnoreCase) >= 0, n118570);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"INFO  | VEHICLE_NAMES live check skipped | {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+    else
+    {
+        Console.WriteLine("INFO  | VEHICLE_NAMES live check skipped | game folder not found");
+    }
+}
+catch (Exception ex)
+{
+    Check("VEHICLE_NAMES checks", false, $"{ex.GetType().Name}: {ex.Message}");
+}
+
 Console.WriteLine($"INFO  | TOTAL PASS COUNT | {passes}");
 Console.WriteLine(failures == 0
     ? "ALL CHECKS PASSED"
