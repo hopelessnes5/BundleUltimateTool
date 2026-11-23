@@ -1,6 +1,18 @@
 # Vehicle IDs → names (NFS: Hot Pursuit)
 
-Метод: `VEHICLES\VEHICLELIST.BUNDLE` (тип 261) содержит 153 записи по 92 байта и хвост
+> **Важно:** таблица ниже получена cross-reference через `VEHICLELIST` и содержит ошибки.
+> Авторитетный источник — **самый бандл каждого автомобиля**: в `VEH_<id>_*.BIN` есть
+> record типа 19 размером 576 байт, где `u32 @+104` = ID конкретной модели, `u32 @+132` =
+> ID display-имени в STRINGS (`UI\LANGUAGE\0001.BNDL`). Приложение использует именно это
+> правило (`VehicleNameResolver.BuildFromVehicleBundles`).
+>
+> Пример ошибки старой таблицы: `380028` помечен `SHELBY GT500`, но его бандл даёт
+> `+132=383582 -> AUDI TT RS`, `+104=380048 -> TT RS COUPÉ` (подтверждено текстурами TT RS).
+> Другие исправления: 172502 → SLR MCLAREN 722, 172544 → SLR MCLAREN STIRLING MOSS,
+> 172586 → MCLAREN MP4-12C, 383112 → BENTLEY CONTINENTAL, 383155 → CARBON MOTORS E7,
+> 383480 → GALLARDO SUPERLEGGERA, 383613 → MAZDA RX-8, 383853 → GALLARDO LP 550-2.
+
+Метод ниже (устаревший, для справки): `VEHICLES\VEHICLELIST.BUNDLE` (тип 261) содержит 153 записи по 92 байта и хвост
 из 257 uint32. В записях и хвосте лежат числовые ID файлов `VEH_<id>_*.BIN`; рядом в тех же
 записях находятся числовые ID строк из STRINGS-таблиц (`UI\LANGUAGE\*.BNDL`, тип 513,
 8194 строки на таблицу, 13 языков). STRINGS не имеют текстовых ключей — только

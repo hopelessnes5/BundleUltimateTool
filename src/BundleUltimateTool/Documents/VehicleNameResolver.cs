@@ -70,9 +70,16 @@ internal static class VehicleNameResolver
                 return Empty;
             }
 
-            var stringIndex = BuildStringIndex(strings);
-            var names = new Dictionary<uint, string>();
-            CorrelateVehicleLists(bundlePaths, vehIds, strings, stringIndex, names, token);
+            // Authoritative source: the vehicle bundle itself. Every VEH_*_MS.BIN has a
+            // type-19 record of 576 bytes whose u32 at +104/+132 are STRINGS IDs for the
+            // specific/model name and the display name. VEHICLELIST cross-references are
+            // only a fallback — they picked wrong cars for some IDs (e.g. 380028).
+            var names = BuildFromVehicleBundles(bundlePaths, strings, token);
+            if (names.Count == 0)
+            {
+                var stringIndex = BuildStringIndex(strings);
+                CorrelateVehicleLists(bundlePaths, vehIds, strings, stringIndex, names, token);
+            }
             ApplicationLog.Write("VEHICLE_NAMES",
                 $"root='{gameRoot}', vehIds={vehIds.Count}, strings={strings.Strings.Count}, names={names.Count}");
             return names;
@@ -205,6 +212,52 @@ internal static class VehicleNameResolver
                 index.Add(id);
         }
         return index;
+    }
+
+    private static Dictionary<uint, string> BuildFromVehicleBundles(List<string> bundlePaths,
+        NfsStringsTable strings, CancellationToken token)
+    {
+        var names = new Dictionary<uint, string>();
+        foreach (string path in bundlePaths
+            .Where(p => ParseVehId(Path.GetFileName(p)).HasValue)
+            .OrderBy(p => Path.GetFileName(p).Contains("_MS.", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(p => p, StringComparer.OrdinalIgnoreCase))
+        {
+            token.ThrowIfCancellationRequested();
+            uint? id = ParseVehId(Path.GetFileName(path));
+            if (!id.HasValue || names.ContainsKey(id.Value)) continue;
+            try
+            {
+                using BundleReader reader = BundleReader.Open(path);
+                foreach (BundleEntry entry in reader.Entries)
+                {
+                    if (entry.FileType != 19 || entry.MaskedHdrUncompSize != 576) continue;
+                    byte[] data = DecompressEntryHeader(reader, entry);
+                    if (data.Length < 136) continue;
+                    uint specificId = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(104, 4));
+                    uint displayId = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(132, 4));
+                    string specific = ResolveString(strings, specificId);
+                    string display = ResolveString(strings, displayId);
+                    string chosen = !string.IsNullOrWhiteSpace(display) ? display : specific;
+                    if (string.IsNullOrWhiteSpace(chosen)) continue;
+                    names[id.Value] = NormalizeName(chosen);
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                ApplicationLog.Write("VEHICLE_NAMES_BUNDLE_FAILED", $"'{path}': {ex.Message}");
+            }
+        }
+        ApplicationLog.Write("VEHICLE_NAMES_PER_BUNDLE", $"resolved={names.Count}");
+        return names;
+    }
+
+    private static string ResolveString(NfsStringsTable table, uint id)
+    {
+        if (id == 0 || !table.IdToIndex.TryGetValue(id, out int index)) return string.Empty;
+        string value = table.Strings[index] ?? string.Empty;
+        return ScoreCarName(value) > 0 ? value.Trim().Trim('\0', ' ', '\r', '\n') : string.Empty;
     }
 
     private static void CorrelateVehicleLists(List<string> bundlePaths, HashSet<uint> vehIds,

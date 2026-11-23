@@ -1172,49 +1172,30 @@ try
                     stringIds.Add(id);
             }
 
-            string[] brandHints = { "BUGATTI", "NISSAN", "AUDI", "LAMBORGHINI", "KOENIGSEGG", "MCLAREN", "SHELBY", "PORSCHE", "BMW", "MASERATI", "DODGE", "FORD", "ASTON", "BENTLEY", "JAGUAR" };
+            // Authoritative: each VEH_*_MS.BIN carries a type-19 record of 576 bytes with
+            // STRINGS IDs at +104 (specific) and +132 (display name).
             var names = new Dictionary<uint, string>();
-            foreach (string path in Directory.EnumerateFiles(gameRoot, "*VEHICLELIST*", SearchOption.AllDirectories))
+            foreach (string path in Directory.EnumerateFiles(gameRoot, "VEH_*_MS.BIN", SearchOption.AllDirectories))
             {
+                uint? id = ParseVehIdLocal(Path.GetFileName(path));
+                if (!id.HasValue || names.ContainsKey(id.Value)) continue;
                 try
                 {
                     using BundleReader r = BundleReader.Open(path);
                     foreach (BundleEntry e in r.Entries)
                     {
-                        if (e.FileType != 261) continue;
+                        if (e.FileType != 19 || e.MaskedHdrUncompSize != 576) continue;
                         byte[] compressed = r.ReadBytes(e.AbsoluteHeaderOffset, checked((int)e.Raw.HdrCompSize));
-                        byte[] data = ZLibAdapter.Decompress(compressed, checked((int)e.MaskedHdrUncompSize));
-                        const int RS = 92, HS = 32;
-                        int recCount = Math.Max(0, (data.Length - HS) / RS);
-                        for (int ri = 0; ri < recCount; ri++)
-                        {
-                            int off = HS + ri * RS;
-                            uint? vehId = null;
-                            for (int f = 0; f < RS / 4; f++)
-                            {
-                                uint v = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(off + f * 4, 4));
-                                if (vehIds.Contains(v)) { vehId = v; break; }
-                            }
-                            if (!vehId.HasValue || names.ContainsKey(vehId.Value)) continue;
-                            for (int f = 0; f < RS / 4; f++)
-                            {
-                                uint v = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(off + f * 4, 4));
-                                if (stringIds.Contains(v) && strings.IdToIndex.TryGetValue(v, out int stringIdx))
-                                {
-                                    string candidate = strings.Strings[stringIdx];
-                                    bool branded = brandHints.Any(b => candidate.IndexOf(b, StringComparison.OrdinalIgnoreCase) >= 0);
-                                    if (!names.TryGetValue(vehId.Value, out string previous))
-                                        names[vehId.Value] = candidate;
-                                    else
-                                    {
-                                        bool previousBranded = brandHints.Any(b => previous.IndexOf(b, StringComparison.OrdinalIgnoreCase) >= 0);
-                                        if ((branded && !previousBranded) ||
-                                            (branded == previousBranded && candidate.Length < previous.Length))
-                                            names[vehId.Value] = candidate;
-                                    }
-                                }
-                            }
-                        }
+                        byte[] data = ZLibAdapter.Decompress(compressed, 576);
+                        if (data.Length < 136) continue;
+                        uint specificId = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(104, 4));
+                        uint displayId = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(132, 4));
+                        string display = displayId != 0 && strings.IdToIndex.TryGetValue(displayId, out int di) ? strings.Strings[di] : string.Empty;
+                        string specific = specificId != 0 && strings.IdToIndex.TryGetValue(specificId, out int si) ? strings.Strings[si] : string.Empty;
+                        string chosen = !string.IsNullOrWhiteSpace(display) ? display : specific;
+                        if (!string.IsNullOrWhiteSpace(chosen))
+                            names[id.Value] = chosen.Trim().Trim('\0', ' ', '\r', '\n');
+                        break;
                     }
                 }
                 catch { }
@@ -1225,6 +1206,8 @@ try
                 Check("VEHICLE_NAMES 118158 contains BUGATTI", n118158.IndexOf("BUGATTI", StringComparison.OrdinalIgnoreCase) >= 0, n118158);
             if (names.TryGetValue(118570u, out string n118570))
                 Check("VEHICLE_NAMES 118570 contains NISSAN", n118570.IndexOf("NISSAN", StringComparison.OrdinalIgnoreCase) >= 0, n118570);
+            if (names.TryGetValue(380028u, out string n380028))
+                Check("VEHICLE_NAMES 380028 is Audi TT RS", n380028.IndexOf("AUDI TT RS", StringComparison.OrdinalIgnoreCase) >= 0, n380028);
         }
         catch (Exception ex)
         {
