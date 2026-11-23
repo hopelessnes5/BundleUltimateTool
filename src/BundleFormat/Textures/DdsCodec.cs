@@ -15,8 +15,10 @@ public static class DdsCodec
     public const uint DdsCaps = 0x00000001;
     public const uint DdsHeight = 0x00000002;
     public const uint DdsWidth = 0x00000004;
+    public const uint DdsPitch = 0x00000008;
     public const uint DdsPixelFormatFlag = 0x00001000;
     public const uint DdsMipMapCount = 0x00020000;
+    public const uint DdsLinearSize = 0x00080000;
 
     public const uint DdsAlphaPixels = 0x00000001;
     public const uint DdsAlpha = 0x00000002;
@@ -100,34 +102,37 @@ public static class DdsCodec
     }
 
     /// <summary>
-    /// Builds the DDS header exactly as CNFSTexture::ConstructHeader does. Note that it
-    /// intentionally omits DDS_PIXELFORMAT/DDS_LINEARSIZE in dwFlags, and that the RGBA32
-    /// masks (R=0x00ff0000, B=0x000000ff) describe BGRA byte order in the pixel payload.
+    /// Builds a standard DirectDraw DDS header (DDSD_CAPS|WIDTH|HEIGHT|PIXELFORMAT|
+    /// MIPMAPCOUNT plus LINEARSIZE for DXT / PITCH for RGBA). The legacy NFS C++ helper
+    /// omitted DDSD_PIXELFORMAT and LINEARSIZE, which Blender and other standard readers
+    /// reject; keep the pixel masks (BGRA order) but make the header spec-compliant.
     /// </summary>
     public static DdsHeader BuildHeader(NfsTextureHeader texture)
     {
-        DdsPixelFormat format;
-        if (texture.Type == FourCcDxt1 || texture.Type == FourCcDxt5)
-        {
-            format = new DdsPixelFormat(DdsPixelFormat.SizeBytes, DdsFourCc,
-                texture.Type, 0, 0, 0, 0, 0);
-        }
-        else if (texture.Type == NfsTypeRgba32)
-        {
-            format = new DdsPixelFormat(DdsPixelFormat.SizeBytes, DdsRgba, 0, 32,
-                0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
-        }
-        else
-        {
+        bool compressed = texture.Type == FourCcDxt1 || texture.Type == FourCcDxt5;
+        bool rgba = texture.Type == NfsTypeRgba32;
+        if (!compressed && !rgba)
             throw new BundleFormatException($"Unsupported NFS texture type {texture.Type}.");
-        }
+
+        DdsPixelFormat format = compressed
+            ? new DdsPixelFormat(DdsPixelFormat.SizeBytes, DdsFourCc, texture.Type, 0, 0, 0, 0, 0)
+            : new DdsPixelFormat(DdsPixelFormat.SizeBytes, DdsRgba, 0, 32,
+                0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
+
+        int width = Math.Max(1, (int)texture.Width);
+        int height = Math.Max(1, (int)texture.Height);
+        int mips = Math.Max(1, (int)texture.NumMipmaps);
+        uint pitchOrLinearSize = compressed
+            ? (uint)(((width + 3) / 4) * ((height + 3) / 4) * (texture.Type == FourCcDxt1 ? 8 : 16))
+            : (uint)(width * 4);
+        uint flags = DdsCaps | DdsWidth | DdsHeight | DdsPixelFormatFlag | DdsMipMapCount |
+                     (compressed ? DdsLinearSize : DdsPitch);
+        uint caps1 = DdsTexture | (mips > 1 ? DdsComplex : 0);
+        uint caps2 = mips > 1 ? DdsMipMap : 0;
 
         return new DdsHeader(
-            DdsHeader.SizeBytes,
-            DdsCaps | DdsWidth | DdsHeight | DdsMipMapCount,
-            texture.Height, texture.Width,
-            0, 0, texture.NumMipmaps,
-            format, DdsTexture, 0);
+            DdsHeader.SizeBytes, flags, (uint)height, (uint)width,
+            pitchOrLinearSize, 0, (uint)mips, format, caps1, caps2);
     }
 
     public static byte[] BuildDds(NfsTextureHeader texture, ReadOnlySpan<byte> imageData)

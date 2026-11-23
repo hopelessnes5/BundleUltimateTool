@@ -33,6 +33,54 @@ namespace BundleUltimateTool
             }
         }
 
+        private void ExportUsdSelected()
+        {
+            var models = GetSelectedViews()
+                .Where(view => view.Entry.FileType == (uint)NfsFileType.Model)
+                .ToList();
+            if (models.Count == 0)
+            {
+                MessageBox.Show(this,
+                    UiLocalization.TranslateId("export.noModels", "No model entries selected.", _uiLanguage),
+                    UiLocalization.TranslateId("export.usdTitle", "Export USD models", _uiLanguage),
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using var folderDialog = new FolderBrowserDialog
+            {
+                Description = UiLocalization.TranslateId("dialog.export.usdFolder",
+                    "Select output folder for .usd files", _uiLanguage)
+            };
+            if (folderDialog.ShowDialog(this) != DialogResult.OK) return;
+
+            int exported = 0;
+            int failed = 0;
+            foreach (BundleEntryView view in models)
+            {
+                string target = Path.Combine(folderDialog.SelectedPath, ExportFileName(view, "usd"));
+                try
+                {
+                    NfsModel model = TryLoadModel(view.Document, view.Entry, out string error);
+                    if (model == null) throw new BundleFormat.Primitives.BundleFormatException(error);
+                    UsdSummary summary = UsdExporter.ExportFile(target, model);
+                    exported++;
+                    ApplicationLog.Write("EXPORT_USD_OK",
+                        $"{target}: meshes={summary.Meshes}, vertices={summary.Vertices}, faces={summary.Faces}.");
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    ApplicationLog.Write("EXPORT_USD_FAILED", $"{target}: {ex.Message}", ex);
+                }
+            }
+            MessageBox.Show(this,
+                string.Format(UiLocalization.TranslateId("export.summary.body",
+                    "Exported: {0}\nFailed: {1}", _uiLanguage), exported, failed),
+                UiLocalization.TranslateId("export.usdTitle", "Export USD models", _uiLanguage),
+                MessageBoxButtons.OK, failed > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        }
+
         private void ExportObj(bool selectedOnly)
         {
             if (_openDocuments.Count == 0) return;

@@ -23,16 +23,29 @@ public readonly record struct NfsMeshHeader(
     }
 
     /// <summary>Faithful port of ChooseVertexSize: align32(size * numVertexes) == VBSize.</summary>
+    /// <remarks>
+    /// Multiple strides can align to the same VBSize for small numVertexes; in that ambiguous case
+    /// we prefer a stride with credible UV channels, then keep original candidate order for stability.
+    /// Current known/credible UV-carrying strides: 36,48,52,56,60,64.
+    /// </remarks>
     public static uint ChooseVertexSize(uint numVertexes, uint vbAlignedSize)
     {
+        uint firstMatch = 0;
+        uint firstUvMatch = 0;
         foreach (uint vertexSize in KnownVertexSizes)
         {
             ulong unaligned = (ulong)vertexSize * numVertexes;
             ulong aligned = (unaligned + 31UL) & ~31UL;
-            if (aligned == vbAlignedSize) return vertexSize;
+            if (aligned != vbAlignedSize) continue;
+            if (firstMatch == 0) firstMatch = vertexSize;
+            if (firstUvMatch == 0 && HasCredibleUv(vertexSize)) firstUvMatch = vertexSize;
         }
-        return 0;
+        if (firstMatch == 0) return 0;
+        return firstUvMatch != 0 ? firstUvMatch : firstMatch;
     }
+
+    private static bool HasCredibleUv(uint vertexSize) =>
+        vertexSize == 36 || vertexSize == 48 || vertexSize == 52 || vertexSize == 56 || vertexSize == 60 || vertexSize == 64;
 
     public uint VertexSize => ChooseVertexSize(NumVertexes, VbSize);
 }

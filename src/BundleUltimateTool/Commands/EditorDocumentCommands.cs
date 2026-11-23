@@ -25,6 +25,8 @@ namespace BundleUltimateTool.Commands
         DdsToNfs,
         ExportObjSelected,
         ExportObjAll,
+        ExportUsdSelected,
+        ExportAuto,
         SaveStrings,
         ViewDefs,
         AssembleBundle,

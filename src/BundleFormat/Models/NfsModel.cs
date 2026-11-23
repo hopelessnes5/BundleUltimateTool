@@ -5,14 +5,27 @@ namespace BundleFormat.Models;
 
 public readonly record struct NfsVector3(float X, float Y, float Z);
 public readonly record struct NfsVector2(float X, float Y);
-public readonly record struct NfsVertex(NfsVector3 Position, NfsVector3 Normal, NfsVector2 Uv);
+public readonly record struct NfsVertex(NfsVector3 Position, NfsVector3 Normal, NfsVector2 Uv0, NfsVector2 Uv1, NfsVector2 Uv2)
+{
+    public NfsVertex(NfsVector3 position, NfsVector3 normal, NfsVector2 uv)
+        : this(position, normal, uv, default, default) { }
+
+    /// <summary>Alias of <see cref="Uv0"/> kept for existing callers.</summary>
+    public NfsVector2 Uv => Uv0;
+}
 public readonly record struct NfsFace(ushort A, ushort B, ushort C);
 
 public sealed class NfsMesh
 {
     public NfsMeshHeader Header { get; init; }
     public uint VertexSize { get; init; }
-    public bool HasUv => VertexSize == 48 || VertexSize == 60;
+    public bool HasUv => VertexSize == 36 || VertexSize == 48 || VertexSize == 52 || VertexSize == 56 || VertexSize == 60 || VertexSize == 64;
+    /// <summary>
+    /// Material reference hash from mesh header fields when reliably identified.
+    /// The known S_NFSMeshHeader layout (112 bytes) in nfs-bundle-explorer does not
+    /// expose a named material-hash field; this is set to 0 until a verified field is found.
+    /// </summary>
+    public uint MaterialHash { get; init; }
     public NfsVertex[] Vertices { get; init; } = Array.Empty<NfsVertex>();
     public NfsFace[] Faces { get; init; } = Array.Empty<NfsFace>();
 }
@@ -112,6 +125,10 @@ public sealed class NfsModel
         {
             ReadOnlySpan<byte> vertex = modelBytes.Slice(start + i * stride, stride);
             static float Scale(short value) => value / 32767.0f * 8.0f;
+            static NfsVector2 ReadUv(ReadOnlySpan<byte> v, int offset) => new(
+                (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(v.Slice(offset, 2))),
+                (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(v.Slice(offset + 2, 2))));
+
             var position = new NfsVector3(
                 Scale(BinaryPrimitives.ReadInt16LittleEndian(vertex.Slice(0, 2))),
                 Scale(BinaryPrimitives.ReadInt16LittleEndian(vertex.Slice(2, 2))),
@@ -121,18 +138,49 @@ public sealed class NfsModel
                 BinaryPrimitives.ReadSingleLittleEndian(vertex.Slice(12, 4)),
                 BinaryPrimitives.ReadSingleLittleEndian(vertex.Slice(16, 4)));
 
-            NfsVector2 uv = default;
-            // Only 48/60 have a UV specialization. Other strides still read position and
-            // normal from the leading mesh_vertex_48 fields, but leave UV at (0,0); the
-            // OBJ exporter omits vt lines in that case (see ObjExporter).
-            if (stride == 48 || stride == 60)
+            NfsVector2 uv0 = default, uv1 = default, uv2 = default;
+            // UV layouts from nfs-bundle-explorer NFSStructuresDef.h and real-file scan (VEH_118158_MS.BIN + NFS:HP bundles).
+            // Known structs:
+            //   48: u0/v0 @40, u1/v1 @44
+            //   52: u0/v0 @40, u1/v1 @44, u2/v2 @48
+            //   60: u0/v0 @52, u1/v1 @56 (binormal shifts UV base)
+            // Credible scan-derived layouts (float16 pairs, finite and mostly in [-2,2]):
+            //   36: u0/v0 @28, u1/v1 @32 (end-of-vertex; consistent with pos+normal+bones+weights=28)
+            //   56: u0/v0 @52 (end-of-vertex; consistent with 60-layout minus second UV pair)
+            //   64: u0/v0 @52, u1/v1 @56 (matches 60 UV positions; trailing 4 bytes unknown)
+            if (stride == 36)
             {
-                int uvOffset = stride == 60 ? 52 : 40;
-                uv = new NfsVector2(
-                    (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(vertex.Slice(uvOffset, 2))),
-                    (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(vertex.Slice(uvOffset + 2, 2))));
+                uv0 = ReadUv(vertex, 28);
+                uv1 = ReadUv(vertex, 32);
             }
-            result[i] = new NfsVertex(position, normal, uv);
+            else if (stride == 48)
+            {
+                uv0 = ReadUv(vertex, 40);
+                uv1 = ReadUv(vertex, 44);
+            }
+            else if (stride == 52)
+            {
+                uv0 = ReadUv(vertex, 40);
+                uv1 = ReadUv(vertex, 44);
+                uv2 = ReadUv(vertex, 48);
+            }
+            else if (stride == 56)
+            {
+                uv0 = ReadUv(vertex, 52);
+            }
+            else if (stride == 60)
+            {
+                uv0 = ReadUv(vertex, 52);
+                uv1 = ReadUv(vertex, 56);
+            }
+            else if (stride == 64)
+            {
+                uv0 = ReadUv(vertex, 52);
+                uv1 = ReadUv(vertex, 56);
+            }
+            // Unknown strides: position/normal read from leading mesh_vertex_48-compatible fields; UVs remain (0,0).
+
+            result[i] = new NfsVertex(position, normal, uv0, uv1, uv2);
         }
         return result;
     }

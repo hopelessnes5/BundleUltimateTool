@@ -252,6 +252,12 @@ WithFixture("VEHICLETEX.BIN", reader =>
     Eq("VEHICLETEX[0]: DDS width", ddsHeader.Width, (uint)texture.GetWidth());
     Eq("VEHICLETEX[0]: DDS height", ddsHeader.Height, (uint)texture.GetHeight());
     Eq("VEHICLETEX[0]: DDS mip count", ddsHeader.MipMapCount, (uint)texture.GetNumMipmaps());
+    Check("VEHICLETEX[0]: DDS header is Blender-compatible",
+        (ddsHeader.Flags & (DdsCodec.DdsPixelFormatFlag |
+            (texture.Header.Type == DdsCodec.NfsTypeRgba32 ? DdsCodec.DdsPitch : DdsCodec.DdsLinearSize))) != 0 &&
+        ddsHeader.PitchOrLinearSize > 0 &&
+        (ddsHeader.Caps1 & DdsCodec.DdsTexture) != 0,
+        $"flags=0x{ddsHeader.Flags:X}, pitch={ddsHeader.PitchOrLinearSize}, caps1=0x{ddsHeader.Caps1:X}");
     if (texture.Header.Type == DdsCodec.NfsTypeRgba32)
     {
         Check("VEHICLETEX[0]: DDS RGBA format", ddsHeader.PixelFormat.Flags == DdsCodec.DdsRgba &&
@@ -516,6 +522,51 @@ WithFixture("VEH_118158_MS.BIN", reader =>
     }
     Console.WriteLine($"INFO  | OBJ export regression | ok={objOk}, failed={objFailed}");
     Check("OBJ export regression: no failures", objFailed == 0, $"ok={objOk}, failed={objFailed}");
+
+    // OpenUSD export (primary geometry format) on the same first model entry.
+    BundleEntry usdEntry = reader.Entries[0];
+    byte[] usdHeader = ZLibAdapter.Decompress(
+        reader.ReadBytes(usdEntry.AbsoluteHeaderOffset, (int)usdEntry.Raw.HdrCompSize),
+        (int)usdEntry.MaskedHdrUncompSize);
+    byte[] usdBody = ZLibAdapter.Decompress(
+        reader.ReadBytes(usdEntry.AbsoluteBodyOffset, (int)usdEntry.Raw.DataCompSize),
+        (int)usdEntry.MaskedDataUncompSize);
+    NfsModel usdModel = NfsModel.InitFromData(usdHeader, usdBody);
+    string usdPath = Path.Combine(objTemp, "file_0000.usd");
+    UsdSummary usdSummary = UsdExporter.ExportFile(usdPath, usdModel);
+    string usdText = File.ReadAllText(usdPath);
+    Check("USD export summary", usdSummary.Meshes == 1 && usdSummary.Vertices == 4 && usdSummary.Faces == 2,
+        $"meshes={usdSummary.Meshes}, verts={usdSummary.Vertices}, faces={usdSummary.Faces}");
+    Check("USD is USDA with mesh and UV primvars",
+        usdText.StartsWith("#usda 1.0") && usdText.Contains("def Mesh \"Geom\"") &&
+        usdText.Contains("primvars:uv0") && usdText.Contains("material:binding"),
+        $"bytes={usdText.Length}");
+    NfsVertex uvSample = usdModel.Meshes[0].Vertices.First(v => v.Uv0.X != 0f || v.Uv0.Y != 0f);
+    string expectedFlippedV = (1f - uvSample.Uv0.Y).ToString("R", CultureInfo.InvariantCulture);
+    Check("USD flips V coordinate for Blender", usdText.Contains(expectedFlippedV),
+        $"expected V={expectedFlippedV}");
+    int materialCount = System.Text.RegularExpressions.Regex.Matches(usdText, "def Material \"Mat_").Count;
+    Check("USD creates one material per geometry part", materialCount == usdModel.Meshes.Count,
+        $"materials={materialCount}, meshes={usdModel.Meshes.Count}");
+    Check("USD binds each mesh to its own material",
+        usdText.Contains("rel material:binding = </Materials/Mat_0000_00000000>"),
+        "mesh 0 binding");
+
+    // Multi-part model: 40 meshes must produce 40 distinct materials/bindings.
+    BundleEntry multiEntry = reader.Entries[8];
+    byte[] multiHeader = ZLibAdapter.Decompress(
+        reader.ReadBytes(multiEntry.AbsoluteHeaderOffset, (int)multiEntry.Raw.HdrCompSize),
+        (int)multiEntry.MaskedHdrUncompSize);
+    byte[] multiBody = ZLibAdapter.Decompress(
+        reader.ReadBytes(multiEntry.AbsoluteBodyOffset, (int)multiEntry.Raw.DataCompSize),
+        (int)multiEntry.MaskedDataUncompSize);
+    NfsModel multiModel = NfsModel.InitFromData(multiHeader, multiBody);
+    string multiUsdPath = Path.Combine(objTemp, "file_0008.usd");
+    UsdSummary multiSummary = UsdExporter.ExportFile(multiUsdPath, multiModel);
+    string multiUsdText = File.ReadAllText(multiUsdPath);
+    int multiMaterials = System.Text.RegularExpressions.Regex.Matches(multiUsdText, "def Material \"Mat_").Count;
+    Check("USD multi-part materials", multiSummary.Meshes == 40 && multiMaterials == 40,
+        $"meshes={multiSummary.Meshes}, materials={multiMaterials}");
 });
 
 // Synthetic model helpers.

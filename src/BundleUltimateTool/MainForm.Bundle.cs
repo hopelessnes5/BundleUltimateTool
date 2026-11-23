@@ -140,12 +140,24 @@ namespace BundleUltimateTool
             _startupHandled = true;
             ApplicationLog.Write("STARTUP_STEP", "begin");
             if (!string.IsNullOrWhiteSpace(_startupGameFolder))
-                ApplyGameFolder(_startupGameFolder, switchToFileMode: _startupSwitchToFiles);
+            {
+                // Only explicit --game-folder selection triggers indexing at startup.
+                // A remembered settings path is kept in _gameFolderPath for the dialog
+                // but must never be auto-scanned/restored.
+                bool explicitGameFolder = _startupSwitchToFiles ||
+                    !string.Equals(_startupGameFolder, _gameFolderPath, StringComparison.OrdinalIgnoreCase);
+                if (explicitGameFolder)
+                    ApplyGameFolder(_startupGameFolder, switchToFileMode: _startupSwitchToFiles);
+                else
+                    ApplicationLog.Write("STARTUP_LAZY", "skipped saved game folder restore: " + _startupGameFolder);
+            }
             ApplicationLog.Write("STARTUP_STEP", "after game folder");
             if (!string.IsNullOrWhiteSpace(_startupFile))
                 OpenBundle(_startupFile);
             ApplicationLog.Write("STARTUP_STEP", "after file");
-            if (string.IsNullOrWhiteSpace(_startupFile) && string.IsNullOrWhiteSpace(_startupGameFolder) && !_filesMode && _openDocuments.Count == 0)
+            if (string.IsNullOrWhiteSpace(_startupFile) &&
+                (string.IsNullOrWhiteSpace(_startupGameFolder) || !_startupSwitchToFiles) &&
+                !_filesMode && _openDocuments.Count == 0)
                 SetStatus(UiLocalization.TranslateId("status.ready", "Ready", _uiLanguage));
             if (_startupSelectedEntry >= 0) SelectEntryByIndex(_startupSelectedEntry);
             ApplicationLog.Write("STARTUP_STEP", "done");
@@ -613,9 +625,9 @@ namespace BundleUltimateTool
 
         internal string ExportFileName(BundleEntryView view, string extension)
         {
-            string prefix = _openDocuments.Count > 1
-                ? $"{_openDocuments.IndexOf(view.Document):D2}_" : string.Empty;
-            return $"{prefix}file_{view.Entry.Index:D4}.{extension}";
+            // The archive hash is the stable identity; index/document prefix only adds noise.
+            string hash = view.Entry.Raw.Hash.ToString("X8", CultureInfo.InvariantCulture);
+            return $"0x{hash}.{extension}";
         }
 
         private void ClearFilters()

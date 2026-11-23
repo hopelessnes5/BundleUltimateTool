@@ -27,6 +27,8 @@ namespace BundleUltimateTool
                 [EditorDocumentCommandId.DdsToNfs] = ConvertDdsToNfs,
                 [EditorDocumentCommandId.ExportObjSelected] = () => ExportObj(selectedOnly: true),
                 [EditorDocumentCommandId.ExportObjAll] = () => ExportObj(selectedOnly: false),
+                [EditorDocumentCommandId.ExportUsdSelected] = ExportUsdSelected,
+                [EditorDocumentCommandId.ExportAuto] = () => ExportAuto(selectedOnly: false),
                 [EditorDocumentCommandId.SaveStrings] = SaveStrings,
                 [EditorDocumentCommandId.ViewDefs] = ViewDefs,
                 [EditorDocumentCommandId.AssembleBundle] = ShowAssembler,
@@ -55,8 +57,9 @@ namespace BundleUltimateTool
             ToolStripCommandBinding.Bind(ddsToNfsMenuItem, _commands[EditorDocumentCommandId.DdsToNfs]);
             ToolStripCommandBinding.Bind(exportObjSelectedMenuItem, _commands[EditorDocumentCommandId.ExportObjSelected]);
             ToolStripCommandBinding.Bind(exportObjAllMenuItem, _commands[EditorDocumentCommandId.ExportObjAll]);
-            ToolStripCommandBinding.Bind(exportObjSelectedContextItem, _commands[EditorDocumentCommandId.ExportObjSelected]);
+            ToolStripCommandBinding.Bind(exportObjSelectedContextItem, _commands[EditorDocumentCommandId.ExportUsdSelected]);
             ToolStripCommandBinding.Bind(exportObjAllContextItem, _commands[EditorDocumentCommandId.ExportObjAll]);
+            ToolStripCommandBinding.Bind(toolsExtractItem, _commands[EditorDocumentCommandId.ExportAuto]);
             ToolStripCommandBinding.Bind(saveStringsContextItem, _commands[EditorDocumentCommandId.SaveStrings]);
             ToolStripCommandBinding.Bind(viewDefsContextItem, _commands[EditorDocumentCommandId.ViewDefs]);
             ToolStripCommandBinding.Bind(toolsAssembleItem, _commands[EditorDocumentCommandId.AssembleBundle]);
@@ -90,6 +93,10 @@ namespace BundleUltimateTool
                 !_filesMode && GetSelectedViews().Any(view => NfsFileTypeInfo.SupportsModelExport(view.Entry.FileType)),
             EditorDocumentCommandId.ExportObjAll =>
                 !_filesMode && _openDocuments.Count > 0,
+            EditorDocumentCommandId.ExportUsdSelected =>
+                !_filesMode && GetSelectedViews().Any(view => NfsFileTypeInfo.SupportsModelExport(view.Entry.FileType)),
+            EditorDocumentCommandId.ExportAuto =>
+                !_filesMode && _openDocuments.Count > 0,
             EditorDocumentCommandId.SaveStrings =>
                 !_filesMode && _openDocuments.Count > 0,
             EditorDocumentCommandId.ViewDefs =>
@@ -116,16 +123,25 @@ namespace BundleUltimateTool
             bool anyStrings = selected.Any(view => NfsFileTypeInfo.SupportsStringsSave(view.Entry.FileType));
             bool anyDefs = selected.Any(view => NfsFileTypeInfo.SupportsDefsView(view.Entry.FileType));
 
-            if (exportRawSelectedContextItem != null)
-                exportRawSelectedContextItem.Enabled = any && CanExecuteCommand(EditorDocumentCommandId.ExportRawSelected);
-            if (exportTextureSelectedContextItem != null)
-                exportTextureSelectedContextItem.Enabled = anyTexture && CanExecuteCommand(EditorDocumentCommandId.ExportTextureSelected);
-            if (exportObjSelectedContextItem != null)
-                exportObjSelectedContextItem.Enabled = anyModel && CanExecuteCommand(EditorDocumentCommandId.ExportObjSelected);
-            if (saveStringsContextItem != null)
-                saveStringsContextItem.Enabled = anyStrings && CanExecuteCommand(EditorDocumentCommandId.SaveStrings);
-            if (viewDefsContextItem != null)
-                viewDefsContextItem.Enabled = anyDefs && CanExecuteCommand(EditorDocumentCommandId.ViewDefs);
+            // With a selection, show ONLY actions valid for that selection. A texture
+            // selection must not offer geometry export, and vice versa.
+            void SetItem(ToolStripItem item, bool visible, bool enabled)
+            {
+                if (item == null) return;
+                item.Visible = visible;
+                item.Enabled = enabled;
+            }
+
+            SetItem(exportRawSelectedContextItem, any, any && CanExecuteCommand(EditorDocumentCommandId.ExportRawSelected));
+            SetItem(exportRawAllContextItem, !any, !any && CanExecuteCommand(EditorDocumentCommandId.ExportRawAll));
+            SetItem(exportTextureSelectedContextItem, anyTexture,
+                anyTexture && CanExecuteCommand(EditorDocumentCommandId.ExportTextureSelected));
+            SetItem(exportTextureAllContextItem, !any, !any && CanExecuteCommand(EditorDocumentCommandId.ExportTextureAll));
+            SetItem(exportObjSelectedContextItem, anyModel,
+                anyModel && CanExecuteCommand(EditorDocumentCommandId.ExportUsdSelected));
+            SetItem(exportObjAllContextItem, !any, !any && CanExecuteCommand(EditorDocumentCommandId.ExportObjAll));
+            SetItem(saveStringsContextItem, anyStrings, anyStrings && CanExecuteCommand(EditorDocumentCommandId.SaveStrings));
+            SetItem(viewDefsContextItem, anyDefs, anyDefs && CanExecuteCommand(EditorDocumentCommandId.ViewDefs));
         }
 
         private void OnOpenDialog()

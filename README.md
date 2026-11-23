@@ -37,8 +37,12 @@ Windows-утилита для полного цикла работы с архи
 
 - Извлечение RAW `.nfs` (декомпрессированные заголовок + тело) для выбранных или всех записей.
 - Текстуры: 2D-предпросмотр, экспорт `.dds`, конвертация `.dds → .nfs`.
-- Модели: экспорт в Wavefront `.obj` (глобальные 1-based индексы); регрессионный тест
-  экспортирует все 44 модели эталонного архива.
+- Модели: основной формат — **OpenUSD (USDA `.usd`)** с `uv0/uv1/uv2`, several primvars
+  и привязкой материалов; `.obj` остаётся legacy-экспортом. USDA пишется с Z-up-transform
+  `(X, -Z, Y) × 1000`.
+- Команда **«Авто-экспорт архива»** (`Инструменты`): автоматически определяет формат
+  по типу записи — текстуры → `.dds`, модели → `.usd`, STRINGS/DEFS → `.txt`,
+  остальные → RAW `.nfs`. Имена файлов включают хеш записи: `file_0000_0x6CB9F778.usd`.
 - STRINGS: сохранение таблицы строк в UTF-8 `.txt`; DEFS: таблица в панели свойств.
 - Сборщик архивов: замена записей из `.nfs`, запись во временный файл с атомарной заменой
   цели (исправлен баг оригинала, оставлявший `.temp`).
@@ -82,7 +86,7 @@ dotnet run --project tests/BundleChecks/BundleChecks.csproj -c Release
 
 Проверки читают эталонные файлы из `F:\repos\nfs-bundle-explorer\src\test`
 (бинарники в репозиторий не копируются). Сейчас **337 проверок**, включая побайтовую
-пересборку архивов, OBJ-экспорт всех моделей, кэш и incident-тесты битых таблиц.
+пересборку архивов, OBJ- и USD-экспорт моделей, кэш и тесты битых таблиц (339 проверок).
 
 ## Поддерживаемые типы и ограничения
 
@@ -96,7 +100,9 @@ dotnet run --project tests/BundleChecks/BundleChecks.csproj -c Release
 - Новые zlib-потоки корректны, но не побайтово совпадают со старой версией zlib
   (например, 4885 B против 4448 B); сборка без замен побайтово идентична оригиналу.
 - STRINGS-таблицы нет в эталонных архивах — её разбор покрыт синтетическим тестом.
-- Папка игры выбирается вручную; автоопределения установленных игр нет. Скрытые записи
+- Папка игры выбирается вручную; при старте сохранённый путь **не сканируется** (лог
+  `STARTUP_LAZY`), индексация начинается только после явного выбора папки или `--game-folder`.
+  Автоопределения установленных игр нет. Скрытые записи
   (`.svn`) показываются как обычные папки. Пересборка поверх исходника требует подтверждения.
 
 ## Overview
@@ -114,7 +120,7 @@ A DX12 renderer and Prototype-style indexing are adapted for NFS bundles.
   header-only indexing, a compact type histogram and a binary sidecar cache using strict
   identity checks. A single click on `+` expands a bundle, the next collapses it.
 - Type filter built from actual archive contents; eight sorting modes ported from Prototype.
-- Raw `.nfs` extraction, DDS export/conversion, OBJ export, STRINGS→TXT, DEFS table view,
+- Raw `.nfs` extraction, DDS export/conversion, OpenUSD export (OBJ kept as legacy), STRINGS→TXT, DEFS table view,
   and an archive assembler with atomic replacement.
 - Prototype-style 2D preview (`RGBA`/`RGB` presets, R/G/B/A channels, resolution label)
   and a compact DX12 3D viewer with orbit camera, gizmo and stats overlay.
@@ -126,7 +132,8 @@ C# 13, .NET 9, WinForms, Direct3D 12 via Vortice 3.8.3 (no WPF). Requires the .N
 Windows Desktop Runtime; shipped as a framework-dependent single-file EXE. Most non-core
 file types are identified and named but not decoded (raw extraction only). 3D models are
 shown untextured; new zlib streams are valid but not byte-identical to legacy output.
-Game-folder discovery is manual.
+Game-folder discovery is manual; a remembered path is not scanned at startup
+(`STARTUP_LAZY`), indexing starts only after explicit selection or `--game-folder`.
 
 ### Build / test / run
 
@@ -136,5 +143,5 @@ dotnet run --project tests/BundleChecks/BundleChecks.csproj -c Release
 .\src\BundleUltimateTool\bin\Release\net9.0-windows\BundleUltimateTool.exe --game-folder "F:\Games\NFS HP"
 ```
 
-337 checks pass, including byte-identical rebuilds, 44-model OBJ regression, cache
+339 checks pass, including byte-identical rebuilds, OBJ/USD model export, cache
 identity tests and corrupt-table cases.
